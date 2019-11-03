@@ -15,6 +15,8 @@ Commands sent to the wrapper need to be JSON formatted, and have item `command` 
     `{"command":"get_status"}`
 
 Note that not all functions are directly supported, i.e. not all functions are pre-processed; they are called as is, along with the 
-__single__ argument. In these cases, it is up to the user to ensure that the correctly formatted parameter is sent in the single arg (if at all possible).
+__single__ argument. In these cases, it is up to the user to ensure that the correctly formatted parameter is sent in the single arg (if at all possible). Whilst it should be possible to allow for arbitrary number of arguments, my own use case has not needed this, and so I have not spent time on it.
 
 The code also supports basic Home Assistant/openHAB MQTT discovery functionality, which can be enabled through the corresponding config file parameter (see the sample config file `jlr2mqtt.cfg.sample`).
+
+Finally, the code is made available here as is, no warranties of any kind whatsoever etc etc. It is currently at a level that suits my needs, and so I am not likely to be spending much further time on it.

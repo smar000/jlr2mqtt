@@ -1,0 +1,11 @@
+[Unit]
+Description=JLR 2 MQTT Service
+
+[Service]
+Type=idle
+WorkingDirectory=/opt/scripts/landrover
+ExecStart=/usr/bin/python3 /opt/scripts/landrover/jlr2mqtt.py
+
+[Install]
+Alias=jlr2mqtt
+WantedBy=default.target

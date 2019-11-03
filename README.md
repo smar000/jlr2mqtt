@@ -1,6 +1,6 @@
 # JLR InControl to MQTT
 
-A simple mqtt wrapper around [@ardevd's "jlrpy" library](https://github.com/ardevd/jlrpy), for accessing [Jaguar Land Rover's Remote Car API](https://documenter.getpostman.com/view/6250319/RznBMzqo?version=latest#intro).
+A simple mqtt wrapper around [@ardevd's **jlrpy** library](https://github.com/ardevd/jlrpy), for accessing [Jaguar Land Rover's Remote Car API](https://documenter.getpostman.com/view/6250319/RznBMzqo?version=latest#intro).
 
 Requires `paho-mqtt` and `python 3`. Configuration parameters for the mqtt broker etc are defined in a config file named `jlr2mqtt.cfg` (use the sample config file as a template).
 

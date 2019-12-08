@@ -130,8 +130,7 @@ def mqtt_on_disconnect(client, userdata, rc):
 
 def mqtt_on_log(client, obj, level, string):
     """ mqtt log event received """
-    if DEBUG:
-        print("[DEBUG] MQTT log message received. Client: {}, obj: {}, level: {}".format(client, obj, level))
+    logger.debug ("[DEBUG] MQTT log message received. Client: {}, obj: {}, level: {}".format(client, obj, level))
     print("[DEBUG] MQTT log msg: {}".format(string))
 
 
@@ -319,7 +318,7 @@ def publish_status_dict(status_dict, subtopic, key="key"):
                     topic = "{}/{}".format(topic_base, prop)
                     mqtt_client.publish(topic, element[prop], MQTT_QOS, True)
     
-    mqtt_client.publish( "{}/last_update_ts".format(JLR_SYSTEM_TOPIC, subtopic), get_timestamp_string(), MQTT_QOS, True)
+    mqtt_client.publish("{}/last_update_ts".format(JLR_SYSTEM_TOPIC), get_timestamp_string(), MQTT_QOS, True)
 
 
 def publish_departure_timers(timers):

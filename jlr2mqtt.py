@@ -17,7 +17,7 @@ Note that not all functions are directly supported, i.e. not all functions are p
 single argument. In these cases, it is up to the user to ensure that the correctly formatted parameter is sent in the single arg (if at all possible).
 
 """
-
+import inspect
 import jlrpy
 import configparser
 import paho.mqtt.client as mqtt
@@ -39,7 +39,7 @@ JLR_SYSTEM_SUBTOPIC = "system"
 JLR_SYSTEM_SENSORT_TYPE = "system"
 JLR_SYSTEM_TOPIC = "{}/{}".format(JLR_DEVICE_ID, JLR_SYSTEM_SUBTOPIC)
 
-DEFAULT_COMMAND_STATUS_REFRESH_DELAY = 10
+DEFAULT_COMMAND_STATUS_REFRESH_DELAY = 60
 
 def get_config_param(config,section,name,default):
     if config.has_option(section,name):
@@ -62,7 +62,7 @@ MQTT_QOS          = 0
 
 JLR_USER = get_config_param(config,"JLR", "USER_ID", "")
 JLR_PW = get_config_param(config,"JLR", "PASSWORD", "")
-MASTER_PIN = get_config_param(config,"JLR", "PIN", "0000")
+MASTER_PIN = get_config_param(config,"JLR", "PIN", None)
 
 HOMEASSISTANT_DISCOVERY = get_config_param(config,"MISC", "HOMEASSISTANT_DISCOVERY", False)
 DISCOVERY_SENSORS_LIST =  get_config_param(config,"MISC", "DISCOVERY_SENSORS_LIST", "").replace("\n","").replace(" ","").replace("[","").replace("]","")
@@ -153,7 +153,7 @@ def mqtt_on_message(client, userdata, msg):
         fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
         print(e, exc_type, fname, exc_tb.tb_lineno)
         print("msg.payload: {} (payload str: '{}')".format(msg.payload, payload))
-    logger.info("Completed processing incoming message")
+    logger.debug("Completed processing incoming mqtt message '{}'".format(msg.payload))
 
 
 def update_state_on_mqtt(state):
@@ -432,13 +432,13 @@ def get_status(for_key=None):
 
 def do_command(json_data):
     get_jlr_connection()
-
+    
     if jlr_connection:
         v = jlr_connection.vehicles[0]
 
         ret = None
         command = json_data["command"]
-        arg = json_data["arg"] if "arg" in json_data else None            
+        # arg = json_data["arg"] if "arg" in json_data else None            
         status_refresh_delay = DEFAULT_COMMAND_STATUS_REFRESH_DELAY
 
         if "init_ha_discovery" == command:
@@ -454,67 +454,87 @@ def do_command(json_data):
             for_key = json_data["key"] if "key" in json_data else None
             ret = get_status(for_key)
             status_refresh_delay = -1
-        elif "start_precondition" == command:
-            # arg is temperature in degC x 10, e.g. 25.5 = 255
-            arg = str(arg) if arg else ""
-            logger.info("Sending precondition with argument: {}".format(arg))
-            v.preconditioning_start(arg)
-        elif "stop_precondition" == command:
-            ret = v.preconditioning_stop()
-        elif "unlock" == command:
-            ret = v.unlock(MASTER_PIN) 
-        elif "lock" == command:       
-            ret = v.lock(MASTER_PIN)
-        elif "honk_blink" == command:
-            ret = v.honk_blink()
-            status_refresh_delay = -1
-        elif "charging_start" == command:
-            ret = v.charging_start()
-        elif "charging_stop" == command:
-            ret = v.charging_stop()
-        elif "reverse_geocode" == command:
-            ret = get_and_publish_reverse_geocode(arg)
-        elif "add_departure_timer" == command:
-            try:
-                dtm = datetime.datetime.strptime(arg, '%Y-%m-%dT%H:%M')
-                logger.info("Setting departure time for {}".format(dtm))
-                ret = v.add_departure_timer(1,dtm.year, dtm.month, dtm.day, dtm.hour, dtm.minute)
+        # elif "start_precondition" == command:
+        #     # arg is temperature in degC x 10, e.g. 25.5 = 255
+        #     arg = str(arg) if arg else ""
+        #     logger.info("Sending precondition with argument: {}".format(arg))
+        #     v.preconditioning_start(arg)
+        # elif "stop_precondition" == command:
+        #     ret = v.preconditioning_stop()
+        # elif "unlock" == command:
+        #     ret = v.unlock(MASTER_PIN) 
+        # elif "lock" == command:       
+        #     ret = v.lock(MASTER_PIN)
+        # elif "honk_blink" == command:
+        #     ret = v.honk_blink()
+        #     status_refresh_delay = -1
+        # elif "charging_start" == command:
+        #     ret = v.charging_start()
+        # elif "charging_stop" == command:
+        #     ret = v.charging_stop()
+        # elif "reverse_geocode" == command:
+        #     ret = get_and_publish_reverse_geocode(arg)
+        # elif "add_departure_timer" == command:
+        #     try:
+        #         dtm = datetime.datetime.strptime(arg, '%Y-%m-%dT%H:%M')
+        #         logger.info("Setting departure time for {}".format(dtm))
+        #         ret = v.add_departure_timer(1,dtm.year, dtm.month, dtm.day, dtm.hour, dtm.minute)
                 
-                # Note takes almost a minute to get the departure timers showing in status updates
-                status_refresh_delay = 60
-            except:
-                logger.error("Invalid date/time for departure time: '{}'".format(command["departure_dtm"]))
-                return            
-        elif "delete_departure_timer" == command:
-            # Note takes almost a minute to get the departure timers showing in status updates
-            status_refresh_delay = 60            
-            if arg:
-                logger.info("Deleting timer with index {}".format(arg))
-                ret = v.delete_departure_timer(arg)
-            else:
-                logger.info("[*] Deleting all timers...")
-                timers = get_departure_timers(v)         
-                mqtt_client.publish("{}/departure_timers/{}".format(MQTT_PUB_TOPIC, arg), "", True)  
-                if timers:
-                    logger.info("[+] {} timers found".format(len(timers)))
-                    for timer in timers:
-                        logger.info("Removing timer {}...".format(timer["timerIndex"]))
-                        v.delete_departure_timer(timer["timerIndex"])
-                        mqtt_client.publish("{}/departure_timers/{}".format(MQTT_PUB_TOPIC, timer["timerIndex"]), "", MQTT_QOS, True)
-                else:
-                    logger.info("Delete timers cancelled as no current timers found: {}".format(timers))
+        #         # Note takes almost a minute to get the departure timers showing in status updates
+        #         status_refresh_delay = 60
+        #     except:
+        #         logger.error("Invalid date/time for departure time: '{}'".format(command["departure_dtm"]))
+        #         return            
+        # elif "delete_departure_timer" == command:
+        #     # Note takes almost a minute to get the departure timers showing in status updates
+        #     status_refresh_delay = 60            
+        #     if arg:
+        #         logger.info("Deleting timer with index {}".format(arg))
+        #         ret = v.delete_departure_timer(arg)
+        #     else:
+        #         logger.info("[*] Deleting all timers...")
+        #         timers = get_departure_timers(v)         
+        #         mqtt_client.publish("{}/departure_timers/{}".format(MQTT_PUB_TOPIC, arg), "", True)  
+        #         if timers:
+        #             logger.info("[+] {} timers found".format(len(timers)))
+        #             for timer in timers:
+        #                 logger.info("Removing timer {}...".format(timer["timerIndex"]))
+        #                 v.delete_departure_timer(timer["timerIndex"])
+        #                 mqtt_client.publish("{}/departure_timers/{}".format(MQTT_PUB_TOPIC, timer["timerIndex"]), "", MQTT_QOS, True)
+        #         else:
+        #             logger.info("Delete timers cancelled as no current timers found: {}".format(timers))
         else:
             # Send the command directly, assuming that arg is correctly specified
             try:
-                command_func = getattr(v, command["function"])
-                if command_func and arg:
-                    command_func(arg)
-                elif command_func:
-                    command_func()
-                else:
-                    raise Exception("Unrecognised command '{}({})'".format(command, arg))
+                command_func = getattr(v, command)
+                func_params = sorted(list(inspect.signature(command_func).parameters.keys()))
+                # logger.debug("func_params: {}".format(func_params))
+                kwargs = json_data["kwargs"] if "kwargs" in json_data else {}
+
+                # User PIN from config file if defined
+                if "pin" in func_params and MASTER_PIN and "pin" not in kwargs:
+                    kwargs["pin"] = MASTER_PIN
+
+                given_params = sorted(list(kwargs))                    
+                if func_params and given_params and type(kwargs) is dict:
+                    params_ok = (given_params == func_params)
+                    if not params_ok:
+                        ret = "Parameter(s) missing for '{}'. Given param(s): '{}'; Required: '{}'".format(
+                            command, ", ".join(given_params),", ".join(func_params))
+                elif func_params and not kwargs:
+                    ret = ("'kwargs' dict with function parameters missing in json, for function '{}({})'".format(command, ",".join(func_params)))
+                    params_ok = False
+                else: # func_params is False/zero length, so no need for params
+                    params_ok = True
+                
+                if not params_ok:                    
+                    raise Exception(ret)
+                                    
+                logger.debug("Calling command function '{}' with parameters {}".format(command, kwargs) if given_params else "Calling function '{}'".format(command))
+                ret = command_func(**kwargs)
             except Exception as e:
-                logger.error("Error: {}".format(e))
+                _, _, exc_tb = sys.exc_info()
+                logger.error("{} [@line number {}]".format(e, exc_tb.tb_lineno))                
                 return
                                              
         mqtt_client.publish("{}/send_command_response".format(JLR_SYSTEM_TOPIC), "{}".format(ret), 0, True)

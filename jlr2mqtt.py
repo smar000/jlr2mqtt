@@ -204,9 +204,9 @@ def init_ha_discovery_for_standard_items():
     mqtt_client.publish(topic, json.dumps(config), MQTT_QOS, True)
     topic, config = get_ha_disc_topic_and_config(JLR_SYSTEM_SUBTOPIC, "send_command", None, JLR_SYSTEM_SENSORT_TYPE, True)
     mqtt_client.publish(topic, json.dumps(config), MQTT_QOS, True)
-    topic, config = get_ha_disc_topic_and_config(JLR_SYSTEM_SUBTOPIC, "send_command_response", None, JLR_SYSTEM_SENSORT_TYPE, True)
+    topic, config = get_ha_disc_topic_and_config(JLR_SYSTEM_SUBTOPIC, "send_command_response", None, JLR_SYSTEM_SENSORT_TYPE, False)
     mqtt_client.publish(topic, json.dumps(config), MQTT_QOS, True)
-    topic, config = get_ha_disc_topic_and_config(JLR_SYSTEM_SUBTOPIC, "send_command_response_ts", None, JLR_SYSTEM_SENSORT_TYPE, True)
+    topic, config = get_ha_disc_topic_and_config(JLR_SYSTEM_SUBTOPIC, "send_command_response_ts", None, JLR_SYSTEM_SENSORT_TYPE, False)
     mqtt_client.publish(topic, json.dumps(config), MQTT_QOS, True)
 
 

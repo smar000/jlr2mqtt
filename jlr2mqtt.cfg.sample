@@ -12,6 +12,8 @@ MQTT_SUB_TOPIC      = jlr2mqtt/command
 MQTT_SERVER         = <mqtt server ip>
 
 MQTT_CLIENTID       = jlr2mqtt
+MQTT_RETAIN         = False
+
 
 [MISC]
 # Enabling this will post Home Assistant compatible config jsons to the homeassistant/jlr2mqtt_<category> topic 

@@ -6,17 +6,19 @@ Requires `paho-mqtt` and `python 3`. Configuration parameters for the mqtt broke
 
 Currently *all* status values are retrieved from JLR and posted to the mqtt broker (there are a lot of them!), though an attempt is made to categoriese them for the obvious ones.
 
-Commands sent to the wrapper need to be JSON formatted, and have item `command` with a value set to the name of the API library function being called. Function names are exactly as defined in the `jlrpy.py` library. A single argument can be included with the key word `arg`. e.g: 
+Commands sent to the wrapper need to be JSON formatted, and have item `command` with a value set to the name of the API library function being called. Function names are exactly as defined in the `jlrpy.py` library. All arguments required by the underlying function *must* be provided as a dict comprising of the parameter name and its value under the parent key "kwargs" (this can be omitted if the function has no arguments). The only exception is for the 'pin' parameter required by a number of the functions. If this is defined in the config file (see below), then it is not necessary to specify it in the `kwargs` dict.
+
+Some examples:
 
 1. To set a departure time, the command would look like:
-    `{"command":"add_departure_timer", "arg": "2019-10-31T15:10"}`
+    `{"command":"add_departure_timer", "kwargs": {"index": 0, "year": 2019, "month": 10, "day": 31", "hour": 15, "minute": 0} }`
 
-2. To refresh the current vehicle status:
+2. To turn the engine on and start the remote climate control:
+    `{"command":"remote_engine_start", "kwargs": {"pin": 1234, "target_value": 42} }`
+
+3. To refresh the current vehicle status values:
     `{"command":"get_status"}`
 
-Note that not all functions are directly supported, i.e. not all functions are pre-processed; they are called as is, along with the 
-__single__ argument. In these cases, it is up to the user to ensure that the correctly formatted parameter is sent in the single arg (if at all possible). Whilst it should be possible to allow for arbitrary number of arguments, my own use case has not needed this, and so I have not spent time on it.
-
-The code also supports basic Home Assistant/openHAB MQTT discovery functionality, which can be enabled through the corresponding config file parameter (see the sample config file `jlr2mqtt.cfg.sample`).
+The code also supports basic Home Assistant/openHAB MQTT discovery functionality, which can be enabled through the corresponding config file parameter (see the sample config file `jlr2mqtt.cfg.sample`). 
 
 Finally, the code is made available here as is, no warranties of any kind whatsoever etc etc. It is currently at a level that suits my needs, and so I am not likely to be spending much further time on it.

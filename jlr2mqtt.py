@@ -31,7 +31,7 @@ from threading import Timer
 
 LOG_LEVEL = jlrpy.logging.INFO
 
-VERSION         = "0.4"
+VERSION         = "0.7"
 CONFIG_FILE     = "jlr2mqtt.cfg"
 
 JLR_DEVICE_ID = "jlr2mqtt"
@@ -56,9 +56,9 @@ MQTT_SUB_TOPIC    = get_config_param(config,"MQTT", "MQTT_SUB_TOPIC", "").rstrip
 MQTT_PUB_TOPIC    = get_config_param(config,"MQTT", "MQTT_PUB_TOPIC", "").rstrip('/')
 MQTT_USER         = get_config_param(config,"MQTT", "MQTT_USER", "")
 MQTT_PW           = get_config_param(config,"MQTT", "MQTT_PASSWORD", "")
-# MQTT_CLIENTID     = get_config_param(config,"MQTT", "MQTT_SERVER", "jlr2mqtt")
 MQTT_CLIENTID     = get_config_param(config,"MQTT", "MQTT_CLIENTID", "jlr2mqtt")
 MQTT_QOS          = 0
+MQTT_RETAIN       = bool(get_config_param(config,"MQTT", "MQTT_RETAIN", False))
 
 JLR_USER = get_config_param(config,"JLR", "USER_ID", "")
 JLR_PW = get_config_param(config,"JLR", "PASSWORD", "")
@@ -311,21 +311,21 @@ def publish_status_dict(status_dict, subtopic, key="key"):
         topic_base = "{}/{}/{}/{}".format(MQTT_PUB_TOPIC, subtopic, category, element[key].lower())
 
         if len(element) == 2 and key in element and "value" in element:
-            mqtt_client.publish(topic_base, element["value"],MQTT_QOS, True)
+            mqtt_client.publish(topic_base, element["value"],MQTT_QOS, MQTT_RETAIN)
         else:
             for prop in element:
                 if prop != key:
                     topic = "{}/{}".format(topic_base, prop)
-                    mqtt_client.publish(topic, element[prop], MQTT_QOS, True)
+                    mqtt_client.publish(topic, element[prop], MQTT_QOS, MQTT_RETAIN)
     
-    mqtt_client.publish("{}/last_update_ts".format(JLR_SYSTEM_TOPIC), get_timestamp_string(), MQTT_QOS, True)
+    mqtt_client.publish("{}/last_update_ts".format(JLR_SYSTEM_TOPIC), get_timestamp_string(), MQTT_QOS, MQTT_RETAIN)
 
 
 def publish_departure_timers(timers):
     for timer in timers:
         key = timer["timerIndex"]
         topic = "{}/departure_timers/{}".format(MQTT_PUB_TOPIC, key)
-        mqtt_client.publish(topic, json.dumps(timer), True)    
+        mqtt_client.publish(topic, json.dumps(timer), MQTT_RETAIN)    
 
 
 def publish_position(location):
@@ -336,7 +336,7 @@ def publish_position(location):
         logger.info("[DEBUG] long/lat not found... {}".format(location))
     for loc_element in position:
         topic = "{}/position/{}".format(MQTT_PUB_TOPIC, loc_element)
-        mqtt_client.publish(topic, position[loc_element], MQTT_QOS, True)    
+        mqtt_client.publish(topic, position[loc_element], MQTT_QOS, True)    # Retain last position data...
 
 
 def get_and_publish_reverse_geocode(loc_json):
@@ -438,9 +438,9 @@ def do_command(json_data):
 
         ret = None
         command = json_data["command"]
-        # arg = json_data["arg"] if "arg" in json_data else None            
         status_refresh_delay = DEFAULT_COMMAND_STATUS_REFRESH_DELAY
 
+        # First check if we have a 'custom' command...
         if "init_ha_discovery" == command:
             # Reset initialised status
             global ha_discovery_initalised
@@ -454,64 +454,15 @@ def do_command(json_data):
             for_key = json_data["key"] if "key" in json_data else None
             ret = get_status(for_key)
             status_refresh_delay = -1
-        # elif "start_precondition" == command:
-        #     # arg is temperature in degC x 10, e.g. 25.5 = 255
-        #     arg = str(arg) if arg else ""
-        #     logger.info("Sending precondition with argument: {}".format(arg))
-        #     v.preconditioning_start(arg)
-        # elif "stop_precondition" == command:
-        #     ret = v.preconditioning_stop()
-        # elif "unlock" == command:
-        #     ret = v.unlock(MASTER_PIN) 
-        # elif "lock" == command:       
-        #     ret = v.lock(MASTER_PIN)
-        # elif "honk_blink" == command:
-        #     ret = v.honk_blink()
-        #     status_refresh_delay = -1
-        # elif "charging_start" == command:
-        #     ret = v.charging_start()
-        # elif "charging_stop" == command:
-        #     ret = v.charging_stop()
-        # elif "reverse_geocode" == command:
-        #     ret = get_and_publish_reverse_geocode(arg)
-        # elif "add_departure_timer" == command:
-        #     try:
-        #         dtm = datetime.datetime.strptime(arg, '%Y-%m-%dT%H:%M')
-        #         logger.info("Setting departure time for {}".format(dtm))
-        #         ret = v.add_departure_timer(1,dtm.year, dtm.month, dtm.day, dtm.hour, dtm.minute)
-                
-        #         # Note takes almost a minute to get the departure timers showing in status updates
-        #         status_refresh_delay = 60
-        #     except:
-        #         logger.error("Invalid date/time for departure time: '{}'".format(command["departure_dtm"]))
-        #         return            
-        # elif "delete_departure_timer" == command:
-        #     # Note takes almost a minute to get the departure timers showing in status updates
-        #     status_refresh_delay = 60            
-        #     if arg:
-        #         logger.info("Deleting timer with index {}".format(arg))
-        #         ret = v.delete_departure_timer(arg)
-        #     else:
-        #         logger.info("[*] Deleting all timers...")
-        #         timers = get_departure_timers(v)         
-        #         mqtt_client.publish("{}/departure_timers/{}".format(MQTT_PUB_TOPIC, arg), "", True)  
-        #         if timers:
-        #             logger.info("[+] {} timers found".format(len(timers)))
-        #             for timer in timers:
-        #                 logger.info("Removing timer {}...".format(timer["timerIndex"]))
-        #                 v.delete_departure_timer(timer["timerIndex"])
-        #                 mqtt_client.publish("{}/departure_timers/{}".format(MQTT_PUB_TOPIC, timer["timerIndex"]), "", MQTT_QOS, True)
-        #         else:
-        #             logger.info("Delete timers cancelled as no current timers found: {}".format(timers))
+
         else:
-            # Send the command directly, assuming that arg is correctly specified
+            # It's not a 'custom' command, so send it to the API...
             try:
                 command_func = getattr(v, command)
                 func_params = sorted(list(inspect.signature(command_func).parameters.keys()))
-                # logger.debug("func_params: {}".format(func_params))
                 kwargs = json_data["kwargs"] if "kwargs" in json_data else {}
 
-                # User PIN from config file if defined
+                # Use PIN from config file if defined
                 if "pin" in func_params and MASTER_PIN and "pin" not in kwargs:
                     kwargs["pin"] = MASTER_PIN
 
@@ -536,7 +487,7 @@ def do_command(json_data):
                 _, _, exc_tb = sys.exc_info()
                 logger.error("{} [@line number {}]".format(e, exc_tb.tb_lineno))                
                 return
-                                             
+        
         mqtt_client.publish("{}/send_command_response".format(JLR_SYSTEM_TOPIC), "{}".format(ret), 0, True)
         mqtt_client.publish("{}/send_command_response_ts".format(JLR_SYSTEM_TOPIC), get_timestamp_string(), 0, True)
         if ret:
@@ -551,7 +502,7 @@ def do_command(json_data):
                 status_refresh_timer = Timer(status_refresh_delay, get_status)
                 status_refresh_timer.start()
         else:
-            logger.info("'{}' failed. ret={}".format(command, ret))
+            logger.warn("'{}' failed. ret={}".format(command, ret))
     else:
         logger.error("'{}' command failed as connection to JLR is unavailable".format(command))    
 

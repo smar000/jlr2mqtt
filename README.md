@@ -11,7 +11,7 @@ Commands sent to the wrapper need to be JSON formatted, and have item `command` 
 Some examples:
 
 1. To set a departure time, the command would look like:
-    `{"command":"add_departure_timer", "kwargs": {"index": 0, "year": 2019, "month": 10, "day": 31", "hour": 15, "minute": 0} }`
+    `{"command":"add_departure_timer", "kwargs": {"index": 0, "year": 2019, "month": 10, "day": 31, "hour": 15, "minute": 0} }`
 
 2. To turn the engine on and start the remote climate control:
     `{"command":"remote_engine_start", "kwargs": {"pin": 1234, "target_value": 42} }`

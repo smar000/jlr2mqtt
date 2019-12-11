@@ -440,6 +440,10 @@ def do_command(json_data):
         command = json_data["command"]
         status_refresh_delay = DEFAULT_COMMAND_STATUS_REFRESH_DELAY
 
+        # Clear out any historical response data
+        mqtt_client.publish("{}/send_command_response".format(JLR_SYSTEM_TOPIC), "", 0, True)
+        mqtt_client.publish("{}/send_command_response_ts".format(JLR_SYSTEM_TOPIC), "", 0, True)
+        
         # First check if we have a 'custom' command...
         if "init_ha_discovery" == command:
             # Reset initialised status
@@ -454,7 +458,6 @@ def do_command(json_data):
             for_key = json_data["key"] if "key" in json_data else None
             ret = get_status(for_key)
             status_refresh_delay = -1
-
         else:
             # It's not a 'custom' command, so send it to the API...
             try:

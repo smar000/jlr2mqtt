@@ -29,7 +29,7 @@ import os,sys
 import signal
 from threading import Timer
 
-LOG_LEVEL = jlrpy.logging.INFO
+LOG_LEVEL = jlrpy.logging.DEBUG
 
 VERSION         = "0.7"
 CONFIG_FILE     = "jlr2mqtt.cfg"
@@ -76,6 +76,8 @@ logger.level = LOG_LEVEL
 jlr_connection = None
 status_refresh_timer = None
 ha_discovery_initalised = False
+last_command_service_id = None
+
 
 def sigterm_handler(_signo, _stack_frame):
     exit_gracefully()
@@ -152,12 +154,21 @@ def mqtt_on_message(client, userdata, msg):
         _, _, exc_tb = sys.exc_info()
         logger.error("{} [@line number {}]".format(e, exc_tb.tb_lineno))                
         logger.error("msg.payload: {} (payload str: '{}')".format(msg.payload, payload))
+        msg = {"Status": "Error", "errorDescription": "{} [@line number {}]".format(e, exc_tb.tb_lineno)}
+        publish_command_response("{}".format(msg)) 
     
 
 def update_state_on_mqtt(state):
     mqtt_client.publish("{}/state".format(MQTT_PUB_TOPIC), state, MQTT_QOS, True)
     mqtt_client.publish("{}/config".format(MQTT_PUB_TOPIC), '{"version":"' + VERSION + '"}', MQTT_QOS, True)
-    mqtt_client.publish("{}/state_updated".format(MQTT_PUB_TOPIC),  get_timestamp_string(), MQTT_QOS, True)
+    mqtt_client.publish("{}/system_state_updated".format(MQTT_PUB_TOPIC),  get_timestamp_string(), MQTT_QOS, True)
+
+
+def log_system_error(error, line_number=None):
+    desc = "{} [@line number {}]".format(error, exc_tb.tb_lineno) if line_number else "{}".format(error) 
+    logger.error(desc)
+    msg = {"Status": "Error", "errorDescription": desc}    
+    publish_command_response("{}".format(msg)) 
 
 
 def get_category_from_key(key):
@@ -204,6 +215,8 @@ def init_ha_discovery_for_standard_items():
     topic, config = get_ha_disc_topic_and_config(JLR_SYSTEM_SUBTOPIC, "send_command_response", None, JLR_SYSTEM_SENSORT_TYPE, False)
     mqtt_client.publish(topic, json.dumps(config), MQTT_QOS, True)
     topic, config = get_ha_disc_topic_and_config(JLR_SYSTEM_SUBTOPIC, "send_command_response_ts", None, JLR_SYSTEM_SENSORT_TYPE, False)
+    mqtt_client.publish(topic, json.dumps(config), MQTT_QOS, True)
+    topic, config = get_ha_disc_topic_and_config(JLR_SYSTEM_SUBTOPIC, "send_command_service_id", None, JLR_SYSTEM_SENSORT_TYPE, False)
     mqtt_client.publish(topic, json.dumps(config), MQTT_QOS, True)
 
 
@@ -299,6 +312,14 @@ def get_departure_timers(v):
 
 def get_timestamp_string():
     return datetime.datetime.now().strftime("%Y-%m-%dT%XZ")
+
+def publish_command_response(response):
+    mqtt_client.publish("{}/send_command_response".format(JLR_SYSTEM_TOPIC), "{}".format(response), 0, True)
+    mqtt_client.publish("{}/send_command_response_ts".format(JLR_SYSTEM_TOPIC), get_timestamp_string(), 0, True)
+    if response and "customerServiceId" in response and response["customerServiceId"]:
+        mqtt_client.publish("{}/send_command_service_id".format(JLR_SYSTEM_TOPIC), "{}".format(response["customerServiceId"]), 0, True)
+    else:
+        mqtt_client.publish("{}/send_command_service_id".format(JLR_SYSTEM_TOPIC), "", 0, True)
 
 
 def publish_status_dict(status_dict, subtopic, key="key"):
@@ -416,97 +437,106 @@ def get_status(for_key=None):
         except Exception as e:
             _, _, exc_tb = sys.exc_info()
             logger.error("{} [@line number {}]".format(e, exc_tb.tb_lineno))                
-            return {"status": "Error: {} [@line number {}]".format(e, exc_tb.tb_lineno)}
+            return {"status": "Error", "errorDescription": "{} [@line number {}]".format(e, exc_tb.tb_lineno)}
         
     else:        
         logger.error("'get_status({})' failed as no connection available".format(for_key))
-        return {"status": "Error: get_status({}) failed as no connection available".format(for_key)}
+        return {"status": "Error", "errorDescription": "get_status({}) failed as no connection available".format(for_key)}
 
 
-def do_command(json_data):
-    get_jlr_connection()
+def do_command(json_data):   
+    global last_command_service_id
+
+    # Clear out any historical response data
+    publish_command_response("") 
+    try:
+        get_jlr_connection()   
+        if jlr_connection:
+            v = jlr_connection.vehicles[0]
+
+            ret = None
+            command = json_data["command"]
+            status_refresh_delay = DEFAULT_COMMAND_STATUS_REFRESH_DELAY
+
+            # First check if we have a 'custom' command...
+            if "init_ha_discovery" == command:
+                # Reset initialised status
+                global ha_discovery_initalised
+                ha_discovery_initalised = False
+                # refresh the sensors list 
+                global DISCOVERY_SENSORS_LIST 
+                DISCOVERY_SENSORS_LIST =  get_config_param(config,"MISC", "DISCOVERY_SENSORS_LIST", "").replace("\n","").replace(" ","").replace("[","").replace("]","")
+                ret = get_status()
+                status_refresh_delay = -1
+            elif "get_status" == command:
+                for_key = json_data["key"] if "key" in json_data else None
+                ret = get_status(for_key)
+                status_refresh_delay = -1
+            elif "refresh_last_command_status" == command:
+                logger.debug("processing 'refresh_last_command_status'")
+                if last_command_service_id:
+                    logger.debug("in if.... {}".format(last_command_service_id))
+                    do_command({"command": "get_service_status", "kwargs" : {"service_id" : last_command_service_id}})
+                    status_refresh_delay = -1
+                    return
+            else:
+                # It's not ab 'internal' command, so send it to the API...
+                try:
+                    command_func = getattr(v, command)
+                    func_params = sorted(list(inspect.signature(command_func).parameters.keys()))
+                    kwargs = json_data["kwargs"] if "kwargs" in json_data else {}
+
+                    # Use PIN from config file if defined
+                    if "pin" in func_params and MASTER_PIN and "pin" not in kwargs:
+                        kwargs["pin"] = MASTER_PIN
+
+                    given_params = sorted(list(kwargs))                    
+                    if func_params and given_params and type(kwargs) is dict:
+                        params_ok = (given_params == func_params)
+                        if not params_ok:
+                            ret = "Parameter(s) missing for '{}'. Given param(s): '{}'; Required: '{}'".format(
+                                command, ", ".join(given_params),", ".join(func_params))
+                    elif func_params and not kwargs:
+                        ret = ("'kwargs' dict with function parameters missing in json, for function '{}({})'".format(command, ",".join(func_params)))
+                        params_ok = False
+                    else: # func_params is False/zero length, so no need for params
+                        params_ok = True
+                    
+                    if not params_ok:                    
+                        raise Exception(ret)
+                                        
+                    logger.debug("Calling command function '{}' with parameters {}".format(command, kwargs) if given_params else "Calling function '{}'".format(command))
+                    ret = command_func(**kwargs)
+                except Exception as e:
+                    _, _, exc_tb = sys.exc_info()
+                    logger.error("{} [@line number {}]".format(e, exc_tb.tb_lineno))                
+                    ret = {"status" : "Error: {} [@line number {}]".format(e, exc_tb.tb_lineno)}
+            
+            publish_command_response(ret)
+
+            last_command_service_id = ret["customerServiceId"] if ret and ret["customerServiceId"] else None
+
+            if ret and ret["status"] and not "Error" in ret["status"]:
+                refresh_notice = ". Status will be refreshed in {} seconds".format(status_refresh_delay) if status_refresh_delay > 0 else ""
+                logger.info("'{}' command completed{}".format(command, refresh_notice))  
+                logger.debug("'{}' return value: {}".format(command, ret))
+                if status_refresh_delay > 0 and command != "get_service_status":
+                    global status_refresh_timer
+                    if status_refresh_timer is not None and status_refresh_timer.is_alive():
+                        status_refresh_timer.cancel()
+                        status_refresh_timer = None
+                    status_refresh_timer = Timer(status_refresh_delay, get_status)
+                    status_refresh_timer.start()
+            else:
+                logger.warn("'{}' failed. ret={}".format(command, ret))
+        else:
+            logger.error("'{}' command failed as connection to JLR is unavailable".format(command))    
+            publish_command_response({"status":"Error: '{}' command failed as connection to JLR is unavailable".format(command)})
+    except Exception as e:
+        _, _, exc_tb = sys.exc_info()
+        logger.error("{} @line number {}. json_data = '{}'".format(e, exc_tb.tb_lineno, json_data))                
+        
     
-    if jlr_connection:
-        v = jlr_connection.vehicles[0]
-
-        ret = None
-        command = json_data["command"]
-        status_refresh_delay = DEFAULT_COMMAND_STATUS_REFRESH_DELAY
-
-        # Clear out any historical response data
-        mqtt_client.publish("{}/send_command_response".format(JLR_SYSTEM_TOPIC), "", 0, True)
-        mqtt_client.publish("{}/send_command_response_ts".format(JLR_SYSTEM_TOPIC), "", 0, True)
-        
-        # First check if we have a 'custom' command...
-        if "init_ha_discovery" == command:
-            # Reset initialised status
-            global ha_discovery_initalised
-            ha_discovery_initalised = False
-            # refresh the sensors list 
-            global DISCOVERY_SENSORS_LIST 
-            DISCOVERY_SENSORS_LIST =  get_config_param(config,"MISC", "DISCOVERY_SENSORS_LIST", "").replace("\n","").replace(" ","").replace("[","").replace("]","")
-            ret = get_status()
-            status_refresh_delay = -1
-        elif "get_status" == command:
-            for_key = json_data["key"] if "key" in json_data else None
-            ret = get_status(for_key)
-            status_refresh_delay = -1
-        else:
-            # It's not a 'custom' command, so send it to the API...
-            try:
-                command_func = getattr(v, command)
-                func_params = sorted(list(inspect.signature(command_func).parameters.keys()))
-                kwargs = json_data["kwargs"] if "kwargs" in json_data else {}
-
-                # Use PIN from config file if defined
-                if "pin" in func_params and MASTER_PIN and "pin" not in kwargs:
-                    kwargs["pin"] = MASTER_PIN
-
-                given_params = sorted(list(kwargs))                    
-                if func_params and given_params and type(kwargs) is dict:
-                    params_ok = (given_params == func_params)
-                    if not params_ok:
-                        ret = "Parameter(s) missing for '{}'. Given param(s): '{}'; Required: '{}'".format(
-                            command, ", ".join(given_params),", ".join(func_params))
-                elif func_params and not kwargs:
-                    ret = ("'kwargs' dict with function parameters missing in json, for function '{}({})'".format(command, ",".join(func_params)))
-                    params_ok = False
-                else: # func_params is False/zero length, so no need for params
-                    params_ok = True
-                
-                if not params_ok:                    
-                    raise Exception(ret)
-                                    
-                logger.debug("Calling command function '{}' with parameters {}".format(command, kwargs) if given_params else "Calling function '{}'".format(command))
-                ret = command_func(**kwargs)
-            except Exception as e:
-                _, _, exc_tb = sys.exc_info()
-                logger.error("{} [@line number {}]".format(e, exc_tb.tb_lineno))                
-                ret = {"status" : "Error: {} [@line number {}]".format(e, exc_tb.tb_lineno)}
-        
-        publish_command_response(ret)
-
-        if ret and ret["status"] and not "Error" in ret["status"]:
-            refresh_notice = ". Status will be refreshed in {} seconds".format(status_refresh_delay) if status_refresh_delay > 0 else ""
-            logger.info("'{}' command completed{}".format(command, refresh_notice))  
-            logger.debug("'{}' return value: {}".format(command, ret))
-            if status_refresh_delay > 0:
-                global status_refresh_timer
-                if status_refresh_timer is not None and status_refresh_timer.is_alive():
-                    status_refresh_timer.cancel()
-                    status_refresh_timer = None
-                status_refresh_timer = Timer(status_refresh_delay, get_status)
-                status_refresh_timer.start()
-        else:
-            logger.warn("'{}' failed. ret={}".format(command, ret))
-    else:
-        logger.error("'{}' command failed as connection to JLR is unavailable".format(command))    
-        publish_command_response({"status":"Error: '{}' command failed as connection to JLR is unavailable".format(command)})
-
-
-def publish_command_response(response):
-    mqtt_client.publish("{}/send_command_response".format(JLR_SYSTEM_TOPIC), "{}".format(response), 0, True)
-    mqtt_client.publish("{}/send_command_response_ts".format(JLR_SYSTEM_TOPIC), get_timestamp_string(), 0, True)
 
 
 signal.signal(signal.SIGTERM, sigterm_handler)

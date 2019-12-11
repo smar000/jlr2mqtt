@@ -5,10 +5,10 @@ Remote Car API (https://documenter.getpostman.com/view/6250319/RznBMzqo?version=
 Requires paho-mqtt and python 3.
 
 Commands sent to the wrapper need to be jason formatted, and have item `command` with a value set to the name of the API library function
-being called. Function names are exactly as defined in the `jlrpy.py` library. A single argument can be included with the key word `arg`. e.g:
+being called. Function names are exactly as defined in the `jlrpy.py` library, with arguments given with named parameters in the dict 'kwargs' e.g:
 
     1. To set a departure time, the command would look like:
-        {"command":"add_departure_timer", "arg": "2019-10-31T15:10"}
+        {"command":"add_departure_timer", "kwargs": {"index": 0, "year": 2019, "month": 10, "day": 31", "hour": 15, "minute": 0} }
 
     2. To refresh the current vehicle status:
         {"command":"get_status"}
@@ -131,7 +131,7 @@ def mqtt_on_disconnect(client, userdata, rc):
 def mqtt_on_log(client, obj, level, string):
     """ mqtt log event received """
     logger.debug ("[DEBUG] MQTT log message received. Client: {}, obj: {}, level: {}".format(client, obj, level))
-    print("[DEBUG] MQTT log msg: {}".format(string))
+    logger.debug("[DEBUG] MQTT log msg: {}".format(string))
 
 
 def mqtt_on_message(client, userdata, msg):
@@ -149,12 +149,10 @@ def mqtt_on_message(client, userdata, msg):
             logger.error("Command not recognised: {}".format(json_data))
 
     except Exception as e:
-        exc_type, _, exc_tb = sys.exc_info()
-        fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-        print(e, exc_type, fname, exc_tb.tb_lineno)
-        print("msg.payload: {} (payload str: '{}')".format(msg.payload, payload))
-    logger.debug("Completed processing incoming mqtt message '{}'".format(msg.payload))
-
+        _, _, exc_tb = sys.exc_info()
+        logger.error("{} [@line number {}]".format(e, exc_tb.tb_lineno))                
+        logger.error("msg.payload: {} (payload str: '{}')".format(msg.payload, payload))
+    
 
 def update_state_on_mqtt(state):
     mqtt_client.publish("{}/state".format(MQTT_PUB_TOPIC), state, MQTT_QOS, True)
@@ -193,9 +191,8 @@ def init_ha_discovery_for_dict(sensors_dict, sensor_type="status"):
             
         logger.debug("HomeAssistant configuration topics for '{}' published".format(sensor_type))
     except Exception as e:
-        exc_type, _, exc_tb = sys.exc_info()
-        fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-        print(e, exc_type, fname, exc_tb.tb_lineno)
+        _, _, exc_tb = sys.exc_info()
+        logger.error("{} [@line number {}]".format(e, exc_tb.tb_lineno))                
 
 
 def init_ha_discovery_for_standard_items():
@@ -268,9 +265,8 @@ def get_ha_disc_topic_and_config(key, value_item, category, sensor_type="status"
 
         return topic, config
     except Exception as e:
-        exc_type, _, exc_tb = sys.exc_info()
-        fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-        print(e, exc_type, fname, exc_tb.tb_lineno)
+        _, _, exc_tb = sys.exc_info()
+        logger.error("{} [@line number {}]".format(e, exc_tb.tb_lineno))                
         return None, None
 
     
@@ -402,14 +398,11 @@ def get_status(for_key=None):
                         topic, config = get_ha_disc_topic_and_config("position","formatted_address", None, "location", False)
                         # print ("Formatted add topic/conf: {} \n\n{}".format(topic, config))
                         mqtt_client.publish(topic, json.dumps(config), MQTT_QOS, True)
-    
-                        
+                            
                     init_ha_discovery_for_standard_items()
                     ha_discovery_initalised = True
-
                     logger.info("5/{} HomeAssistant auto discovery topics published".format(count))
-                    
-
+                  
             else:
                 logger.info("[+] Updating status for '{}'".format(for_key))
                 status = v.get_status(for_key.upper())
@@ -418,16 +411,16 @@ def get_status(for_key=None):
                 mqtt_client.publish(topic, status, MQTT_QOS, True)
                 logger.info("1/1 {}: {}".format(for_key, status))
             
-            return True
+            return {"status": "Completed"}
 
         except Exception as e:
-            exc_type, _, exc_tb = sys.exc_info()
-            fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-            print(e, exc_type, fname, exc_tb.tb_lineno)
+            _, _, exc_tb = sys.exc_info()
+            logger.error("{} [@line number {}]".format(e, exc_tb.tb_lineno))                
+            return {"status": "Error: {} [@line number {}]".format(e, exc_tb.tb_lineno)}
         
     else:        
         logger.error("'get_status({})' failed as no connection available".format(for_key))
-
+        return {"status": "Error: get_status({}) failed as no connection available".format(for_key)}
 
 
 def do_command(json_data):
@@ -489,11 +482,11 @@ def do_command(json_data):
             except Exception as e:
                 _, _, exc_tb = sys.exc_info()
                 logger.error("{} [@line number {}]".format(e, exc_tb.tb_lineno))                
-                return
+                ret = {"status" : "Error: {} [@line number {}]".format(e, exc_tb.tb_lineno)}
         
-        mqtt_client.publish("{}/send_command_response".format(JLR_SYSTEM_TOPIC), "{}".format(ret), 0, True)
-        mqtt_client.publish("{}/send_command_response_ts".format(JLR_SYSTEM_TOPIC), get_timestamp_string(), 0, True)
-        if ret:
+        publish_command_response(ret)
+
+        if ret and ret["status"] and not "Error" in ret["status"]:
             refresh_notice = ". Status will be refreshed in {} seconds".format(status_refresh_delay) if status_refresh_delay > 0 else ""
             logger.info("'{}' command completed{}".format(command, refresh_notice))  
             logger.debug("'{}' return value: {}".format(command, ret))
@@ -508,6 +501,12 @@ def do_command(json_data):
             logger.warn("'{}' failed. ret={}".format(command, ret))
     else:
         logger.error("'{}' command failed as connection to JLR is unavailable".format(command))    
+        publish_command_response({"status":"Error: '{}' command failed as connection to JLR is unavailable".format(command)})
+
+
+def publish_command_response(response):
+    mqtt_client.publish("{}/send_command_response".format(JLR_SYSTEM_TOPIC), "{}".format(response), 0, True)
+    mqtt_client.publish("{}/send_command_response_ts".format(JLR_SYSTEM_TOPIC), get_timestamp_string(), 0, True)
 
 
 signal.signal(signal.SIGTERM, sigterm_handler)

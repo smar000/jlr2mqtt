@@ -152,9 +152,9 @@ def mqtt_on_message(client, userdata, msg):
 
     except Exception as e:
         _, _, exc_tb = sys.exc_info()
-        logger.error("{} [@line number {}]".format(e, exc_tb.tb_lineno))                
+        logger.error("{} (line {})".format(e, exc_tb.tb_lineno))                
         logger.error("msg.payload: {} (payload str: '{}')".format(msg.payload, payload))
-        msg = {"Status": "Error", "errorDescription": "{} [@line number {}]".format(e, exc_tb.tb_lineno)}
+        msg = {"Status": "Error", "errorDescription": "{} (line {})".format(e, exc_tb.tb_lineno)}
         publish_command_response("{}".format(msg)) 
     
 
@@ -165,7 +165,7 @@ def update_state_on_mqtt(state):
 
 
 def log_system_error(error, line_number=None):
-    desc = "{} [@line number {}]".format(error, exc_tb.tb_lineno) if line_number else "{}".format(error) 
+    desc = "{} (line {})".format(error, exc_tb.tb_lineno) if line_number else "{}".format(error) 
     logger.error(desc)
     msg = {"Status": "Error", "errorDescription": desc}    
     publish_command_response("{}".format(msg)) 
@@ -203,7 +203,7 @@ def init_ha_discovery_for_dict(sensors_dict, sensor_type="status"):
         logger.debug("HomeAssistant configuration topics for '{}' published".format(sensor_type))
     except Exception as e:
         _, _, exc_tb = sys.exc_info()
-        logger.error("{} [@line number {}]".format(e, exc_tb.tb_lineno))                
+        logger.error("{} (line {})".format(e, exc_tb.tb_lineno))                
 
 
 def init_ha_discovery_for_standard_items():
@@ -279,7 +279,7 @@ def get_ha_disc_topic_and_config(key, value_item, category, sensor_type="status"
         return topic, config
     except Exception as e:
         _, _, exc_tb = sys.exc_info()
-        logger.error("{} [@line number {}]".format(e, exc_tb.tb_lineno))                
+        logger.error("{} (line {})".format(e, exc_tb.tb_lineno))                
         return None, None
 
     
@@ -436,8 +436,8 @@ def get_status(for_key=None):
 
         except Exception as e:
             _, _, exc_tb = sys.exc_info()
-            logger.error("{} [@line number {}]".format(e, exc_tb.tb_lineno))                
-            return {"status": "Error", "errorDescription": "{} [@line number {}]".format(e, exc_tb.tb_lineno)}
+            logger.error("{} (line {})".format(e, exc_tb.tb_lineno))                
+            return {"status": "Error", "errorDescription": "{} (line {})".format(e, exc_tb.tb_lineno)}
         
     else:        
         logger.error("'get_status({})' failed as no connection available".format(for_key))
@@ -448,7 +448,7 @@ def do_command(json_data):
     global last_command_service_id
 
     # Clear out any historical response data
-    publish_command_response("") 
+    publish_command_response({"status": ""}) 
     try:
         get_jlr_connection()   
         if jlr_connection:
@@ -509,12 +509,12 @@ def do_command(json_data):
                     ret = command_func(**kwargs)
                 except Exception as e:
                     _, _, exc_tb = sys.exc_info()
-                    logger.error("{} [@line number {}]".format(e, exc_tb.tb_lineno))                
-                    ret = {"status" : "Error: {} [@line number {}]".format(e, exc_tb.tb_lineno)}
+                    logger.error("{} (line {})".format(e, exc_tb.tb_lineno))                
+                    ret = {"status" : "Error: {} (line {})]".format(e, exc_tb.tb_lineno)}
             
             publish_command_response(ret)
 
-            last_command_service_id = ret["customerServiceId"] if ret and ret["customerServiceId"] else None
+            last_command_service_id = ret["customerServiceId"] if ret and "customerServiceId" in ret and ret["customerServiceId"] else None
 
             if ret and ret["status"] and not "Error" in ret["status"]:
                 refresh_notice = ". Status will be refreshed in {} seconds".format(status_refresh_delay) if status_refresh_delay > 0 else ""

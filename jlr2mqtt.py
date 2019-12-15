@@ -29,17 +29,21 @@ import os,sys
 import signal
 from threading import Timer
 
-LOG_LEVEL = jlrpy.logging.DEBUG
+LOG_LEVEL = jlrpy.logging.INFO
 
-VERSION         = "0.7"
+VERSION         = "0.8"
 CONFIG_FILE     = "jlr2mqtt.cfg"
 
 JLR_DEVICE_ID = "jlr2mqtt"
 JLR_SYSTEM_SUBTOPIC = "system"
-JLR_SYSTEM_SENSORT_TYPE = "system"
+JLR_SYSTEM_SENSOR_TYPE = "system"
 JLR_SYSTEM_TOPIC = "{}/{}".format(JLR_DEVICE_ID, JLR_SYSTEM_SUBTOPIC)
 
+JLR_DEPARTURE_TIMERS_SENSOR_TYPE = "timers"
+JLR_DEPARTURE_TIMERS_COUNT_MAX = 8
+
 DEFAULT_COMMAND_STATUS_REFRESH_DELAY = 60
+MAX_HA_DEPARTURE_TIMERS = 7     # openHAB mqtt binding HA discovery currently doesn't seem to support arrays; Manually add discovery timers to max defind here
 
 def get_config_param(config,section,name,default):
     if config.has_option(section,name):
@@ -208,16 +212,21 @@ def init_ha_discovery_for_dict(sensors_dict, sensor_type="status"):
 
 def init_ha_discovery_for_standard_items():
     """  'last_update_ts' timestamp and the 'send_command' topics are standard items  """
-    topic, config = get_ha_disc_topic_and_config(JLR_SYSTEM_SUBTOPIC,"last_update_ts", None, JLR_SYSTEM_SENSORT_TYPE, False)
+    topic, config = get_ha_disc_topic_and_config(JLR_SYSTEM_SUBTOPIC,"last_update_ts", None, JLR_SYSTEM_SENSOR_TYPE, False)
     mqtt_client.publish(topic, json.dumps(config), MQTT_QOS, True)
-    topic, config = get_ha_disc_topic_and_config(JLR_SYSTEM_SUBTOPIC, "send_command", None, JLR_SYSTEM_SENSORT_TYPE, True)
+    topic, config = get_ha_disc_topic_and_config(JLR_SYSTEM_SUBTOPIC, "send_command", None, JLR_SYSTEM_SENSOR_TYPE, True)
     mqtt_client.publish(topic, json.dumps(config), MQTT_QOS, True)
-    topic, config = get_ha_disc_topic_and_config(JLR_SYSTEM_SUBTOPIC, "send_command_response", None, JLR_SYSTEM_SENSORT_TYPE, False)
+    topic, config = get_ha_disc_topic_and_config(JLR_SYSTEM_SUBTOPIC, "send_command_response", None, JLR_SYSTEM_SENSOR_TYPE, False)
     mqtt_client.publish(topic, json.dumps(config), MQTT_QOS, True)
-    topic, config = get_ha_disc_topic_and_config(JLR_SYSTEM_SUBTOPIC, "send_command_response_ts", None, JLR_SYSTEM_SENSORT_TYPE, False)
+    topic, config = get_ha_disc_topic_and_config(JLR_SYSTEM_SUBTOPIC, "send_command_response_ts", None, JLR_SYSTEM_SENSOR_TYPE, False)
     mqtt_client.publish(topic, json.dumps(config), MQTT_QOS, True)
-    topic, config = get_ha_disc_topic_and_config(JLR_SYSTEM_SUBTOPIC, "send_command_service_id", None, JLR_SYSTEM_SENSORT_TYPE, False)
+    topic, config = get_ha_disc_topic_and_config(JLR_SYSTEM_SUBTOPIC, "send_command_service_id", None, JLR_SYSTEM_SENSOR_TYPE, False)
     mqtt_client.publish(topic, json.dumps(config), MQTT_QOS, True)
+    
+    # Departure timers
+    for count in range(JLR_DEPARTURE_TIMERS_COUNT_MAX):
+        topic, config = get_ha_disc_topic_and_config("departure_timers", str(count), None, JLR_DEPARTURE_TIMERS_SENSOR_TYPE, False)
+        mqtt_client.publish(topic, json.dumps(config), MQTT_QOS, True)
 
 
 def get_ha_disc_topic_and_config(key, value_item, category, sensor_type="status", is_command=False):
@@ -273,7 +282,7 @@ def get_ha_disc_topic_and_config(key, value_item, category, sensor_type="status"
             device_topic = "{}_{}".format(sensor_type.lower(),category.lower()) if category else sensor_type.lower()
         else:
             config_parent_topic = value_item if value_item else key
-            device_topic = "{}_{}".format(sensor_type.lower(), key.lower()) if sensor_type != JLR_SYSTEM_SENSORT_TYPE else JLR_SYSTEM_SENSORT_TYPE
+            device_topic = "{}_{}".format(sensor_type.lower(), key.lower()) if sensor_type not in [JLR_SYSTEM_SENSOR_TYPE, "timers"] else sensor_type
         topic = "{}/sensor/jlr2mqtt_{}/{}/config".format(HA_TOPIC_BASE, device_topic, config_parent_topic)  
 
         return topic, config
@@ -339,12 +348,17 @@ def publish_status_dict(status_dict, subtopic, key="key"):
 
 
 def publish_departure_timers(timers):
-    for timer in timers:
-        key = timer["timerIndex"]
-        topic = "{}/departure_timers/{}".format(MQTT_PUB_TOPIC, key)
-        mqtt_client.publish(topic, json.dumps(timer), MQTT_RETAIN)    
+    if timers:
+        for timer in timers:
+            key = timer["timerIndex"]
+            topic = "{}/departure_timers/{}".format(MQTT_PUB_TOPIC, key)
+            mqtt_client.publish(topic, json.dumps(timer), MQTT_RETAIN)    
+    else:
+        topic = "{}/departure_timers".format(MQTT_PUB_TOPIC)
+        mqtt_client.publish(topic, "[]" , MQTT_RETAIN)    
 
-
+    
+    
 def publish_position(location):
     position = location["position"]
     if "longitude" in position and "latitude" in position:
@@ -403,15 +417,15 @@ def get_status(for_key=None):
                 logger.info("3/{} Location data published to mqtt".format(count))
                 
                 timers = get_departure_timers(v)
+                publish_departure_timers(timers)
                 if timers:
-                    logger.info("{} existing departure timers found".format(len(timers)))
-                    publish_departure_timers(timers)
-                    logger.info("4/{} Departure timers posted to mqtt".format(count))
-                else:                    
-                    logger.info("4/{} No current departure timers found".format(count))
+                    logger.info("4/{} '{}' departure timer(s) published to mqtt".format(count, len(timers)))
+                else:
+                    logger.info("4/{} No departure timers found".format(count))
                 
                 if HOMEASSISTANT_DISCOVERY and not ha_discovery_initalised:
                     init_ha_discovery_for_dict(status, "status")
+                    
                     if "alerts_" in DISCOVERY_SENSORS_LIST:
                         init_ha_discovery_for_dict(alerts, "alerts")
                     if "position" in DISCOVERY_SENSORS_LIST:
@@ -459,7 +473,15 @@ def do_command(json_data):
             status_refresh_delay = DEFAULT_COMMAND_STATUS_REFRESH_DELAY
 
             # First check if we have a 'custom' command...
-            if "init_ha_discovery" == command:
+            if "set_log_level" == command:
+                if "level" in json_data:
+                    level = json_data["level"].upper()
+                    logger.level = getattr(jlrpy.logging, level)
+                    ret={"status": "Completed"}
+                else:
+                    ret={"status": "Error: Log level not key 'level' not found"}
+                status_refresh_delay = -1
+            elif "init_ha_discovery" == command:
                 # Reset initialised status
                 global ha_discovery_initalised
                 ha_discovery_initalised = False

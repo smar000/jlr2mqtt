@@ -351,7 +351,11 @@ def publish_departure_timers(timers):
     # First clear any existing timers - assume max index of 10 for now
     for i in range(0,10):
         topic = "{}/departure_timers/{}".format(MQTT_PUB_TOPIC, i)
+<<<<<<< HEAD
         # logger.info("[DEBUG] posting empty string to topic '{}'".format(topic)) 
+=======
+        # logger.info("[DEBUG] posting empty string to topic '{}'".format(topic))
+>>>>>>> 080c299f761dcfc25a5ee16f74b68d7620d13e49
         mqtt_client.publish(topic, "", MQTT_RETAIN)    
     
     # Now do actual timers

@@ -169,7 +169,7 @@ def update_state_on_mqtt(state):
 
 
 def log_system_error(error, line_number=None):
-    desc = "{} (line {})".format(error, exc_tb.tb_lineno) if line_number else "{}".format(error) 
+    desc = "{} (line {})".format(error, line_number) if line_number else "{}".format(error) 
     logger.error(desc)
     msg = {"Status": "Error", "errorDescription": desc}    
     publish_command_response("{}".format(msg)) 
@@ -348,12 +348,21 @@ def publish_status_dict(status_dict, subtopic, key="key"):
 
 
 def publish_departure_timers(timers):
+    # First clear any existing timers - assume max index of 10 for now
+    for i in range(0,10):
+        topic = "{}/departure_timers/{}".format(MQTT_PUB_TOPIC, i)
+        # logger.info("[DEBUG] posting empty string to topic '{}'".format(topic))
+        mqtt_client.publish(topic, "", MQTT_RETAIN)    
+    
+    # Now do actual timers
     if timers:
         for timer in timers:
             key = timer["timerIndex"]
             topic = "{}/departure_timers/{}".format(MQTT_PUB_TOPIC, key)
             mqtt_client.publish(topic, json.dumps(timer), MQTT_RETAIN)    
+            logger.debug("publish_departure_timers: Publishing to '{}': '{}'".format(topic,json.dumps(timer)))
     else:
+        logger.debug("publish_departure_timers: No timers found")
         topic = "{}/departure_timers".format(MQTT_PUB_TOPIC)
         mqtt_client.publish(topic, "[]" , MQTT_RETAIN)    
 

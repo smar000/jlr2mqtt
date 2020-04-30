@@ -265,6 +265,11 @@ class Vehicle(dict):
         headers["Accept"] = "application/vnd.wirelesscar.ngtp.if9.ServiceStatus-v4+json"
         return self.get('services/%s' % service_id, headers)
 
+    def get_services(self):
+        """Get active services"""
+        headers = self.connection.head.copy()
+        return self.get("services", headers)
+
     def get_rcc_target_value(self):
         """Get Remote Climate Target Value"""
         headers = self.connection.head.copy()
@@ -361,7 +366,7 @@ class Vehicle(dict):
         """Control the climate preconditioning"""
         headers = self.connection.head.copy()
         headers["Accept"] = "application/vnd.wirelesscar.ngtp.if9.ServiceStatus-v5+json"
-        headers["Content-Type"] = "application/vnd.wirelesscar.ngtp.if9.PhevService-v1+json; charset=utf"
+        headers["Content-Type"] = "application/vnd.wirelesscar.ngtp.if9.PhevService-v1+json; charset=utf-8"
 
         ecc_data = self.authenticate_ecc()
         ecc_data['serviceParameters'] = service_parameters
@@ -498,9 +503,7 @@ class Vehicle(dict):
     def _prov_command(self, pin, expiration_time, mode):
         """Send prov endpoint commands. Used for service/transport/privacy mode"""
         headers = self.connection.head.copy()
-        headers["Accept"] = "application/vnd.wirelesscar.ngtp.if9.ServiceStatus-v4+json"
-        headers["Content-Type"] = "application/vnd.wirelesscar.ngtp.if9.StartServiceConfiguration-v3+json; charset=utf-8"
-
+        headers["Content-Type"] = "application/vnd.wirelesscar.ngtp.if9.StartServiceConfiguration-v3+json"
         prov_data = self.authenticate_prov(pin)
 
         prov_data["serviceCommand"] = mode

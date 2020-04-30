@@ -31,7 +31,7 @@ from threading import Timer
 
 LOG_LEVEL = jlrpy.logging.INFO
 
-VERSION         = "0.8.1"
+VERSION         = "0.8.2"
 CONFIG_FILE     = "jlr2mqtt.cfg"
 
 JLR_DEVICE_ID = "jlr2mqtt"
@@ -183,6 +183,7 @@ def get_category_from_key(key):
         category = None
     return category
 
+
 def init_ha_discovery_for_dict(sensors_dict, sensor_type="status"):
     try:
         for sensor in sensors_dict:
@@ -319,8 +320,10 @@ def get_departure_timers(v):
     else:
         return None
 
+
 def get_timestamp_string():
     return datetime.datetime.now().strftime("%Y-%m-%dT%XZ")
+
 
 def publish_command_response(response):
     mqtt_client.publish("{}/send_command_response".format(JLR_SYSTEM_TOPIC), "{}".format(response), 0, True)
@@ -365,7 +368,6 @@ def publish_departure_timers(timers):
         logger.debug("publish_departure_timers: No timers found")
         topic = "{}/departure_timers".format(MQTT_PUB_TOPIC)
         mqtt_client.publish(topic, "[]" , MQTT_RETAIN)    
-
     
     
 def publish_position(location):
@@ -511,7 +513,7 @@ def do_command(json_data):
                     status_refresh_delay = -1
                     return
             else:
-                # It's not ab 'internal' command, so send it to the API...
+                # It's not an 'internal' command, so send it to the API...
                 try:
                     command_func = getattr(v, command)
                     func_params = sorted(list(inspect.signature(command_func).parameters.keys()))
@@ -547,7 +549,7 @@ def do_command(json_data):
 
             last_command_service_id = ret["customerServiceId"] if ret and "customerServiceId" in ret and ret["customerServiceId"] else None
 
-            if ret and ret["status"] and not "Error" in ret["status"]:
+            if ret and "status" in ret and not "Error" in ret["status"]:
                 refresh_notice = ". Status will be refreshed in {} seconds".format(status_refresh_delay) if status_refresh_delay > 0 else ""
                 logger.info("'{}' command completed{}".format(command, refresh_notice))  
                 logger.debug("'{}' return value: {}".format(command, ret))

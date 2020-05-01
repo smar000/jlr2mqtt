@@ -31,7 +31,7 @@ from threading import Timer
 
 LOG_LEVEL = jlrpy.logging.INFO
 
-VERSION         = "0.8.2"
+VERSION         = "0.8.3"
 CONFIG_FILE     = "jlr2mqtt.cfg"
 
 JLR_DEVICE_ID = "jlr2mqtt"
@@ -62,13 +62,14 @@ MQTT_USER         = get_config_param(config,"MQTT", "MQTT_USER", "")
 MQTT_PW           = get_config_param(config,"MQTT", "MQTT_PASSWORD", "")
 MQTT_CLIENTID     = get_config_param(config,"MQTT", "MQTT_CLIENTID", "jlr2mqtt")
 MQTT_QOS          = 0
-MQTT_RETAIN       = bool(get_config_param(config,"MQTT", "MQTT_RETAIN", False))
+MQTT_KEEPALIVE    = int(get_config_param(config,"MQTT", "MQTT_KEEPALIVE", "60"))
+MQTT_RETAIN       = get_config_param(config,"MQTT", "MQTT_RETAIN", "false").lower() == "true"
 
 JLR_USER = get_config_param(config,"JLR", "USER_ID", "")
 JLR_PW = get_config_param(config,"JLR", "PASSWORD", "")
 MASTER_PIN = get_config_param(config,"JLR", "PIN", None)
 
-HOMEASSISTANT_DISCOVERY = get_config_param(config,"MISC", "HOMEASSISTANT_DISCOVERY", False)
+HOMEASSISTANT_DISCOVERY = get_config_param(config,"MISC", "HOMEASSISTANT_DISCOVERY", "false") == "true"
 DISCOVERY_SENSORS_LIST =  get_config_param(config,"MISC", "DISCOVERY_SENSORS_LIST", "").replace("\n","").replace(" ","").replace("[","").replace("]","")
 
 HA_TOPIC_BASE = "homeassistant"
@@ -105,7 +106,7 @@ def initialise_mqtt_client(mqtt_client):
     mqtt_client.on_disconnect = mqtt_on_disconnect
 
     logger.info("Connecting to mqtt server %s" % MQTT_SERVER)
-    mqtt_client.connect(MQTT_SERVER, port=1883, keepalive=0, bind_address="")
+    mqtt_client.connect(MQTT_SERVER, port=1883, keepalive=MQTT_KEEPALIVE, bind_address="")
 
     logger.info("Subscribing to mqtt topic '%s' for inbound commands" % MQTT_SUB_TOPIC)
     mqtt_client.subscribe(MQTT_SUB_TOPIC)

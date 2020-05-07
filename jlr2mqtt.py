@@ -137,8 +137,9 @@ def mqtt_on_disconnect(client, userdata, rc):
     update_state_on_mqtt("offline")
     client.loop_stop()
     if rc != 0:
-        logger.warning("Unexpected disconnection.")
+        logger.warning("Unexpected MQTT broker disconnection")        
         logger.debug("[DEBUG] mqtt rc: {}, userdata: {}, client: {}".format(rc, userdata, client))
+        initialise_mqtt_client(mqtt_client)
     return client
 
 
@@ -319,20 +320,19 @@ def get_jlr_connection():
         if now_ts > jlr_connection.expiration:
             jlr_connection = None
     else:
-        logger.info("No existing 'jlr_connection' available")
-
-    if jlr_connection is None:
-        logger.info("Instantiating new connection to JLR")
+        logger.info("No existing connection to JLR available. Instantiating new connection")
         jlr_connection = jlrpy.Connection(JLR_USER, JLR_PW, JLR_DEVICE_ID)
         if jlr_connection:
             jlr_connection.vehicle_count = len(jlr_connection.vehicles)
-            logger.info("Connected to JLR. {} vehicle{} found".format(jlr_connection.vehicle_count, "s" if jlr_connection.vehicle_count > 1 else ""))
-            logger.info("Multi-vehicle support enabled: {}".format("Yes" if MULTI_VEHICLE_SUPPORT else "No"))
+            logger.info("Connected to JLR. {} vehicle{} found (multi-vehicle support {}enabled)".format(
+                jlr_connection.vehicle_count, "s" if jlr_connection.vehicle_count > 1 else "", 
+                "" if MULTI_VEHICLE_SUPPORT else "not "))
             for i in range(jlr_connection.vehicle_count):
                 logger.info("Vehicle index {}: {}".format(i, jlr_connection.vehicles[i]))            
-    else:
-        logger.debug("Connecton exists....")
-    
+        else:
+            logger.error("Connection to JLR failed")
+            return None
+
     update_ha_availablity()
 
     return jlr_connection
@@ -381,7 +381,7 @@ def publish_status_dict(vehicle_idx, status_dict, subtopic, key="key"):
                     topic = "{}/{}".format(topic_base, prop)
                     mqtt_client.publish(topic, element[prop], MQTT_QOS, MQTT_RETAIN)
     
-    mqtt_client.publish("{}/last_update_ts".format(topic_root, vehicle_idx), get_timestamp_string(), MQTT_QOS, MQTT_RETAIN)    
+    mqtt_client.publish("{}/last_update_ts".format(topic_root), get_timestamp_string(), MQTT_QOS, MQTT_RETAIN)    
     update_ha_availablity()
     
 
@@ -611,7 +611,7 @@ def do_command(json_data):
                     if status_refresh_timer is not None and status_refresh_timer.is_alive():
                         status_refresh_timer.cancel()
                         status_refresh_timer = None
-                    status_refresh_timer = Timer(status_refresh_delay, get_status)
+                    status_refresh_timer = Timer(status_refresh_delay, get_status, [vehicle_idx])
                     status_refresh_timer.start()
             else:
                 logger.warn("[Vehicle {}] '{}' failed. ret={}".format(vehicle_idx, command, ret))

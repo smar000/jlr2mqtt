@@ -2,7 +2,7 @@
 USER_ID = <email address>
 PASSWORD = <password>
 PIN = <pin>
-DEFAULT_VEHICLE_INDEX = 0
+MULTI_VEHICLE_SUPPORT = False
 
 [MQTT]
 MQTT_USER           = <mqtt user id>

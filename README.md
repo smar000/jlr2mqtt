@@ -1,5 +1,7 @@
 # JLR InControl to MQTT
 
+**Updated 07/05/2020:** Added multi-vehicle support
+
 A simple mqtt wrapper around [@ardevd's **jlrpy** library](https://github.com/ardevd/jlrpy), for accessing [Jaguar Land Rover's Remote Car API](https://documenter.getpostman.com/view/6250319/RznBMzqo?version=latest#intro).
 
 Requires `paho-mqtt` and `python 3`. Configuration parameters for the mqtt broker etc are defined in a config file named `jlr2mqtt.cfg` (use the sample config file as a template).
@@ -18,6 +20,9 @@ Some examples:
 
 3. To refresh the current vehicle status values:
     `{"command":"get_status"}`
+
+if `MULTI_VEHICLE_SUPPORT` is not defined, or is set to False in the config file, the system defaults to the first vehicle available from the JLR connection. If `MULTI_VEHICLE_SUPPORT` is True and there are multiple vehicles registered, command JSON must always include the vehicle index parameter `"vehicle_index"`. Note that this is a **zero** based index of the vehicle number, e.g.:
+    `{"command":"get_status", "vehicle_index": 0}`
 
 The code also supports basic Home Assistant/openHAB MQTT discovery functionality, which can be enabled through the corresponding config file parameter (see the sample config file `jlr2mqtt.cfg.sample`). 
 

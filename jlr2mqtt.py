@@ -31,19 +31,9 @@ from threading import Timer
 
 LOG_LEVEL = jlrpy.logging.INFO
 
-VERSION         = "0.8.5"
+VERSION         = "0.9.0"
 CONFIG_FILE     = "jlr2mqtt.cfg"
 
-JLR_DEVICE_ID = "jlr2mqtt"
-JLR_SYSTEM_SUBTOPIC = "system"
-JLR_SYSTEM_SENSOR_TYPE = "system"
-JLR_SYSTEM_TOPIC = "{}/{}".format(JLR_DEVICE_ID, JLR_SYSTEM_SUBTOPIC)
-
-JLR_DEPARTURE_TIMERS_SENSOR_TYPE = "timers"
-JLR_DEPARTURE_TIMERS_COUNT_MAX = 8
-
-DEFAULT_COMMAND_STATUS_REFRESH_DELAY = 60
-MAX_HA_DEPARTURE_TIMERS = 7     # openHAB mqtt binding HA discovery currently doesn't seem to support arrays; Manually add discovery timers to max defind here
 
 def get_config_param(config,section,name,default):
     if config.has_option(section,name):
@@ -57,25 +47,37 @@ config.read(CONFIG_FILE)
 
 MQTT_SERVER       = get_config_param(config,"MQTT", "MQTT_SERVER", "")                  
 MQTT_SUB_TOPIC    = get_config_param(config,"MQTT", "MQTT_SUB_TOPIC", "").rstrip('/')               
-MQTT_PUB_TOPIC    = get_config_param(config,"MQTT", "MQTT_PUB_TOPIC", "").rstrip('/')
+MQTT_PUB_TOPIC    = get_config_param(config,"MQTT", "MQTT_PUB_TOPIC", "jlr2mqtt").rstrip('/')
 MQTT_USER         = get_config_param(config,"MQTT", "MQTT_USER", "")
 MQTT_PW           = get_config_param(config,"MQTT", "MQTT_PASSWORD", "")
 MQTT_CLIENTID     = get_config_param(config,"MQTT", "MQTT_CLIENTID", "jlr2mqtt")
-MQTT_QOS          = 0
-MQTT_KEEPALIVE    = int(get_config_param(config,"MQTT", "MQTT_KEEPALIVE", "60"))
+MQTT_QOS          = int(get_config_param(config,"MQTT", "MQTT_QOS", 0))
+MQTT_KEEPALIVE    = int(get_config_param(config,"MQTT", "MQTT_KEEPALIVE", 60))
 MQTT_RETAIN       = get_config_param(config,"MQTT", "MQTT_RETAIN", "false").lower() == "true"
+
+JLR_DEVICE_ID = get_config_param(config,"JLR", "JLR_DEVICE_ID", MQTT_CLIENTID)
+JLR_SYSTEM_SUBTOPIC = "system"
+JLR_SYSTEM_SENSOR_TYPE = "system"
+JLR_SYSTEM_TOPIC = "{}/{}".format(MQTT_PUB_TOPIC, JLR_SYSTEM_SUBTOPIC)
+MULTI_VEHICLE_SUPPORT = get_config_param(config,"JLR", "MULTI_VEHICLE_SUPPORT", "false").lower() == "true"
 
 JLR_USER = get_config_param(config,"JLR", "USER_ID", "")
 JLR_PW = get_config_param(config,"JLR", "PASSWORD", "")
 MASTER_PIN = get_config_param(config,"JLR", "PIN", None)
 
-DEFAULT_VEHICLE_INDEX = int(get_config_param(config,"JLR", "DEFAULT_VEHICLE_INDEX", 0))
+JLR_DEPARTURE_TIMERS_SENSOR_TYPE = "timers"
+JLR_DEPARTURE_TIMERS_COUNT_MAX = 8
+
+DEFAULT_COMMAND_STATUS_REFRESH_DELAY = 60
+MAX_HA_DEPARTURE_TIMERS = 7     # openHAB mqtt binding HA discovery currently doesn't seem to support arrays; Manually add discovery timers to max defind here
+
+#DEFAULT_VEHICLE_INDEX = int(get_config_param(config,"JLR", "DEFAULT_VEHICLE_INDEX", 0))
 
 HOMEASSISTANT_DISCOVERY = get_config_param(config,"MISC", "HOMEASSISTANT_DISCOVERY", "false").lower() == "true"
 DISCOVERY_SENSORS_LIST =  get_config_param(config,"MISC", "DISCOVERY_SENSORS_LIST", "").replace("\n","").replace(" ","").replace("[","").replace("]","")
 
-HA_TOPIC_BASE = "homeassistant"
-HA_DEVICE_NAME_BASE = "Range Rover"
+HA_TOPIC_BASE = get_config_param(config,"MISC", "HA_TOPIC_BASE", "homeassistant").strip()
+HA_DEVICE_NAME_BASE = get_config_param(config,"MQTT", "HA_DEVICE_NAME_BASE", "Range Rover").title().strip()
 
 logger = jlrpy.logger
 logger.level = LOG_LEVEL
@@ -128,6 +130,7 @@ def mqtt_on_connect(client, userdata, flags, rc):
         logger.debug(" mqtt userdata: {}, flags: {}, client: {}".format(userdata, flags, client))
     return client
 
+
 def mqtt_on_disconnect(client, userdata, rc):
     """ mqtt disconnection event processing """
     client.is_connected = False
@@ -137,6 +140,7 @@ def mqtt_on_disconnect(client, userdata, rc):
         logger.warning("Unexpected disconnection.")
         logger.debug("[DEBUG] mqtt rc: {}, userdata: {}, client: {}".format(rc, userdata, client))
     return client
+
 
 def mqtt_on_log(client, obj, level, string):
     """ mqtt log event received """
@@ -180,7 +184,6 @@ def update_ha_availablity():
         update_state_on_mqtt("offline") 
 
 
-
 def log_system_error(error, line_number=None):
     desc = "{} (line {})".format(error, line_number) if line_number else "{}".format(error) 
     logger.error(desc)
@@ -197,7 +200,7 @@ def get_category_from_key(key):
     return category
 
 
-def init_ha_discovery_for_dict(sensors_dict, sensor_type="status"):
+def init_ha_discovery_for_dict(vehicle_idx, sensors_dict, sensor_type="status"):
     try:
         for sensor in sensors_dict:
             # Use the "key" value from the status dict item if available, otherwise fallback to:
@@ -213,7 +216,7 @@ def init_ha_discovery_for_dict(sensors_dict, sensor_type="status"):
                 if sensor_obj:
                     for value_item in sensor_obj:
                         if value_item != "key":
-                            topic, config = get_ha_disc_topic_and_config(key, value_item, category, sensor_type)  
+                            topic, config = get_ha_disc_topic_and_config(vehicle_idx, key, value_item, category, sensor_type)  
                             mqtt_client.publish(topic, json.dumps(config), MQTT_QOS, True)
             else:
                 logger.debug("HA_init: Dropping {}".format(key))
@@ -224,29 +227,30 @@ def init_ha_discovery_for_dict(sensors_dict, sensor_type="status"):
         logger.error("{} (line {})".format(e, exc_tb.tb_lineno))                
 
 
-def init_ha_discovery_for_standard_items():
+def init_ha_discovery_for_standard_items(vehicle_idx):
     """  'last_update_ts' timestamp and the 'send_command' topics are standard items  """
-    topic, config = get_ha_disc_topic_and_config(JLR_SYSTEM_SUBTOPIC,"last_update_ts", None, JLR_SYSTEM_SENSOR_TYPE, False)
+    topic, config = get_ha_disc_topic_and_config(-1, JLR_SYSTEM_SUBTOPIC,"last_update_ts", None, JLR_SYSTEM_SENSOR_TYPE, False)
     mqtt_client.publish(topic, json.dumps(config), MQTT_QOS, True)
-    topic, config = get_ha_disc_topic_and_config(JLR_SYSTEM_SUBTOPIC, "send_command", None, JLR_SYSTEM_SENSOR_TYPE, True)
+    topic, config = get_ha_disc_topic_and_config(-1, JLR_SYSTEM_SUBTOPIC, "send_command", None, JLR_SYSTEM_SENSOR_TYPE, True)
     mqtt_client.publish(topic, json.dumps(config), MQTT_QOS, True)
-    topic, config = get_ha_disc_topic_and_config(JLR_SYSTEM_SUBTOPIC, "send_command_response", None, JLR_SYSTEM_SENSOR_TYPE, False)
+    topic, config = get_ha_disc_topic_and_config(-1, JLR_SYSTEM_SUBTOPIC, "send_command_response", None, JLR_SYSTEM_SENSOR_TYPE, False)
     mqtt_client.publish(topic, json.dumps(config), MQTT_QOS, True)
-    topic, config = get_ha_disc_topic_and_config(JLR_SYSTEM_SUBTOPIC, "send_command_response_ts", None, JLR_SYSTEM_SENSOR_TYPE, False)
+    topic, config = get_ha_disc_topic_and_config(-1, JLR_SYSTEM_SUBTOPIC, "send_command_response_ts", None, JLR_SYSTEM_SENSOR_TYPE, False)
     mqtt_client.publish(topic, json.dumps(config), MQTT_QOS, True)
-    topic, config = get_ha_disc_topic_and_config(JLR_SYSTEM_SUBTOPIC, "send_command_service_id", None, JLR_SYSTEM_SENSOR_TYPE, False)
+    topic, config = get_ha_disc_topic_and_config(-1, JLR_SYSTEM_SUBTOPIC, "send_command_service_id", None, JLR_SYSTEM_SENSOR_TYPE, False)
     mqtt_client.publish(topic, json.dumps(config), MQTT_QOS, True)
     
     # Departure timers
     for count in range(JLR_DEPARTURE_TIMERS_COUNT_MAX):
-        topic, config = get_ha_disc_topic_and_config("departure_timers", str(count), None, JLR_DEPARTURE_TIMERS_SENSOR_TYPE, False)
+        topic, config = get_ha_disc_topic_and_config(vehicle_idx, "departure_timers", str(count), None, JLR_DEPARTURE_TIMERS_SENSOR_TYPE, False)
         mqtt_client.publish(topic, json.dumps(config), MQTT_QOS, True)
 
 
-def get_ha_disc_topic_and_config(key, value_item, category, sensor_type="status", is_command=False):
+def get_ha_disc_topic_and_config(vehicle_idx, key, value_item, category, sensor_type="status", is_command=False):
     try:
+        topic_base = get_mqtt_base_topic(vehicle_idx)
         if category:
-            state_topic = "{}/{}/{}/{}".format(JLR_DEVICE_ID, sensor_type, category.upper(), key.lower())         
+            state_topic = "{}/{}/{}/{}".format(topic_base, sensor_type, category.upper(), key.lower())         
             device_identifier = "jlr_{}_{}".format(category, sensor_type)
             formatted_cat = category.upper() if len(category) <4 else category.title()
             formatted_cat += " Data" if sensor_type == "status" else " " + sensor_type.title()
@@ -260,11 +264,11 @@ def get_ha_disc_topic_and_config(key, value_item, category, sensor_type="status"
                 state_topic = "{}/{}".format(state_topic, value_item.lower())
         else:
             if value_item:
-                state_topic = "{}/{}/{}".format(JLR_DEVICE_ID, key.lower(), value_item.lower()) 
+                state_topic = "{}/{}/{}".format(topic_base, key.lower(), value_item.lower()) 
                 sensor_name = "{} {}: {}".format(sensor_type.replace("_", " ").title(), key.title().replace("_", " "), value_item)
                 unique_id = "jlr_{}_{}".format(key.lower().replace(" ","_"), value_item.lower())   
             else:
-                state_topic = "{}/{}".format(JLR_DEVICE_ID, key.lower()) 
+                state_topic = "{}/{}".format(topic_base, key.lower()) 
                 sensor_name = "{}: {}".format(sensor_type.title().replace("_"," "), key)
                 unique_id = "jlr_{}".format(key.lower().replace(" ","_"))   
 
@@ -286,7 +290,7 @@ def get_ha_disc_topic_and_config(key, value_item, category, sensor_type="status"
                 "model": "Remote API Status: {}".format(key),
                 "manufacturer": "Land Rover Jaguar"
             },
-            "availability_topic": "{}/state".format(JLR_DEVICE_ID),
+            "availability_topic": "{}/state".format(MQTT_PUB_TOPIC),
             "payload_available": "online",
             "payload_not_available": "offline"        
         }
@@ -297,7 +301,7 @@ def get_ha_disc_topic_and_config(key, value_item, category, sensor_type="status"
         else:
             config_parent_topic = value_item if value_item else key
             device_topic = "{}_{}".format(sensor_type.lower(), key.lower()) if sensor_type not in [JLR_SYSTEM_SENSOR_TYPE, "timers"] else sensor_type
-        topic = "{}/sensor/{}_{}/{}/config".format(HA_TOPIC_BASE, JLR_DEVICE_ID, device_topic, config_parent_topic)  
+        topic = "{}/sensor/{}_{}/{}/config".format(HA_TOPIC_BASE, topic_base, device_topic, config_parent_topic)  
 
         return topic, config
     except Exception as e:
@@ -305,7 +309,7 @@ def get_ha_disc_topic_and_config(key, value_item, category, sensor_type="status"
         logger.error("{} (line {})".format(e, exc_tb.tb_lineno))                
         return None, None
 
-    
+
 def get_jlr_connection():
     global jlr_connection    
     logger.debug("Checking for existing connection")
@@ -323,6 +327,7 @@ def get_jlr_connection():
         if jlr_connection:
             jlr_connection.vehicle_count = len(jlr_connection.vehicles)
             logger.info("Connected to JLR. {} vehicle{} found".format(jlr_connection.vehicle_count, "s" if jlr_connection.vehicle_count > 1 else ""))
+            logger.info("Multi-vehicle support enabled: {}".format("Yes" if MULTI_VEHICLE_SUPPORT else "No"))
             for i in range(jlr_connection.vehicle_count):
                 logger.info("Vehicle index {}: {}".format(i, jlr_connection.vehicles[i]))            
     else:
@@ -345,6 +350,13 @@ def get_timestamp_string():
     return datetime.datetime.now().strftime("%Y-%m-%dT%XZ")
 
 
+def get_mqtt_base_topic(vehicle_idx):
+    if vehicle_idx > -1 and MULTI_VEHICLE_SUPPORT:
+        return "{}/vehicle_{}".format(MQTT_PUB_TOPIC, vehicle_idx)
+    else:
+        return MQTT_PUB_TOPIC
+
+
 def publish_command_response(response):
     mqtt_client.publish("{}/send_command_response".format(JLR_SYSTEM_TOPIC), "{}".format(response), 0, True)
     mqtt_client.publish("{}/send_command_response_ts".format(JLR_SYSTEM_TOPIC), get_timestamp_string(), 0, True)
@@ -355,10 +367,11 @@ def publish_command_response(response):
     update_ha_availablity()
 
 
-def publish_status_dict(status_dict, subtopic, key="key"):
+def publish_status_dict(vehicle_idx, status_dict, subtopic, key="key"):
+    topic_root = get_mqtt_base_topic(vehicle_idx)
     for element in status_dict:        
         category = element[key].split("_")[0]
-        topic_base = "{}/{}/{}/{}".format(MQTT_PUB_TOPIC, subtopic, category, element[key].lower())
+        topic_base = "{}/{}/{}/{}".format(topic_root, subtopic, category, element[key].lower())
 
         if len(element) == 2 and key in element and "value" in element:
             mqtt_client.publish(topic_base, element["value"],MQTT_QOS, MQTT_RETAIN)
@@ -368,15 +381,16 @@ def publish_status_dict(status_dict, subtopic, key="key"):
                     topic = "{}/{}".format(topic_base, prop)
                     mqtt_client.publish(topic, element[prop], MQTT_QOS, MQTT_RETAIN)
     
-    mqtt_client.publish("{}/last_update_ts".format(JLR_SYSTEM_TOPIC), get_timestamp_string(), MQTT_QOS, MQTT_RETAIN)    
+    mqtt_client.publish("{}/last_update_ts".format(topic_root, vehicle_idx), get_timestamp_string(), MQTT_QOS, MQTT_RETAIN)    
     update_ha_availablity()
     
 
-def publish_departure_timers(timers):
+def publish_departure_timers(vehicle_idx, timers):
     update_ha_availablity()
+    topic_base = get_mqtt_base_topic(vehicle_idx)
     # First clear any existing timers - assume max index of 10 for now
     for i in range(0,10):
-        topic = "{}/departure_timers/{}".format(MQTT_PUB_TOPIC, i)
+        topic = "{}/departure_timers/{}".format(topic_base, i)
         # logger.info("[DEBUG] posting empty string to topic '{}'".format(topic)) 
         mqtt_client.publish(topic, "", MQTT_RETAIN)    
     
@@ -384,16 +398,16 @@ def publish_departure_timers(timers):
     if timers:
         for timer in timers:
             key = timer["timerIndex"]
-            topic = "{}/departure_timers/{}".format(MQTT_PUB_TOPIC, key)
+            topic = "{}/departure_timers/{}".format(topic_base, key)
             mqtt_client.publish(topic, json.dumps(timer), MQTT_RETAIN)    
             logger.debug("publish_departure_timers: Publishing to '{}': '{}'".format(topic,json.dumps(timer)))
     else:
         logger.debug("publish_departure_timers: No timers found")
-        topic = "{}/departure_timers".format(MQTT_PUB_TOPIC)
+        topic = "{}/departure_timers".format(topic_base)
         mqtt_client.publish(topic, "[]" , MQTT_RETAIN)    
     
     
-def publish_position(location):
+def publish_position(vehicle_idx, location):
     update_ha_availablity()
     position = location["position"]
     if "longitude" in position and "latitude" in position:
@@ -401,21 +415,23 @@ def publish_position(location):
     else:
         logger.info("[DEBUG] long/lat not found... {}".format(location))
     for loc_element in position:
-        topic = "{}/position/{}".format(MQTT_PUB_TOPIC, loc_element)
+        topic_base = get_mqtt_base_topic(vehicle_idx)
+        topic = "{}/position/{}".format(topic_base, loc_element)
         mqtt_client.publish(topic, position[loc_element], MQTT_QOS, True)    # Retain last position data...
 
 
-def get_and_publish_reverse_geocode(loc_json):
+def get_and_publish_reverse_geocode(vehicle_idx, loc_json):
     if loc_json and "longitude" in loc_json and "latitude" in loc_json:
         ret = jlr_connection.reverse_geocode(loc_json["latitude"], loc_json["longitude"])
         logger.debug("reverse_geocode result: {}".format(ret))
+        topic_base = get_mqtt_base_topic(vehicle_idx)
         if "formattedAddress" in ret:
             # Note that the formatted address topic is posted to the parent 'position' topic as well as the 'address' subtopic. This is to comply with
             # HomeAssitant discovery topic naming convention. Another option would be to put all the 'address' values into the main 'position' topic, instead of having
             # a child 'address' subtopic. Something to be considered later. TODO!!
-            mqtt_client.publish("{}/position/formatted_address".format(MQTT_PUB_TOPIC), ret["formattedAddress"], MQTT_QOS, True)    
+            mqtt_client.publish("{}/position/formatted_address".format(topic_base), ret["formattedAddress"], MQTT_QOS, True)    
             for address_element in ret:
-                topic = "{}/position/address/{}".format(MQTT_PUB_TOPIC, address_element)
+                topic = "{}/position/address/{}".format(topic_base, address_element)
                 mqtt_client.publish(topic, ret[address_element], MQTT_QOS, True)    
             logger.debug("Address for location is: {}".format(ret["formattedAddress"]))
             return ret
@@ -439,37 +455,37 @@ def get_status(vehicle_idx, for_key=None):
                 alerts = full_status["vehicleAlerts"] if "vehicleAlerts" in full_status else {}
                 status = full_status["vehicleStatus"] if "vehicleStatus" in full_status else {}
                 location = v.get_position()
-                publish_status_dict(status, "status")
+                publish_status_dict(vehicle_idx, status, "status")
                 logger.info("[Vehicle {}] 1/{} Status data published to mqtt".format(vehicle_idx, count))
                 
-                publish_status_dict(alerts, "alerts")
+                publish_status_dict(vehicle_idx, alerts, "alerts")
                 logger.info("[Vehicle {}] 2/{} Alerts information published to mqtt".format(vehicle_idx, count))
                 
                 if "position" in location:
-                    publish_position(location)
+                    publish_position(vehicle_idx, location)
                     if "longitude" in location["position"] and "latitude" in location["position"]:
-                        get_and_publish_reverse_geocode(location["position"])                        
+                        get_and_publish_reverse_geocode(vehicle_idx, location["position"])                        
                 logger.info("[Vehicle {}] 3/{} Location data published to mqtt".format(vehicle_idx, count))
                 
                 timers = get_departure_timers(v)
-                publish_departure_timers(timers)
+                publish_departure_timers(vehicle_idx, timers)
                 if timers:
                     logger.info("[Vehicle {}] 4/{} '{}' departure timer(s) published to mqtt".format(vehicle_idx, count, len(timers)))
                 else:
                     logger.info("[Vehicle {}] 4/{} No departure timers found".format(vehicle_idx, count))
                 
                 if HOMEASSISTANT_DISCOVERY and not ha_discovery_initalised:
-                    init_ha_discovery_for_dict(status, "status")
+                    init_ha_discovery_for_dict(vehicle_idx, status, "status")
                     
                     if "alerts_" in DISCOVERY_SENSORS_LIST:
-                        init_ha_discovery_for_dict(alerts, "alerts")
+                        init_ha_discovery_for_dict(vehicle_idx, alerts, "alerts")
                     if "position" in DISCOVERY_SENSORS_LIST:
-                        init_ha_discovery_for_dict(location,"location")                        
-                        topic, config = get_ha_disc_topic_and_config("position","formatted_address", None, "location", False)
+                        init_ha_discovery_for_dict(vehicle_idx, location,"location")                        
+                        topic, config = get_ha_disc_topic_and_config(vehicle_idx, "position","formatted_address", None, "location", False)
                         # print ("Formatted add topic/conf: {} \n\n{}".format(topic, config))
                         mqtt_client.publish(topic, json.dumps(config), MQTT_QOS, True)
                             
-                    init_ha_discovery_for_standard_items()
+                    init_ha_discovery_for_standard_items(vehicle_idx)
                     ha_discovery_initalised = True
                     logger.info("[Vehicle {}] 5/{} HomeAssistant auto discovery topics published".format(vehicle_idx, count))
                   
@@ -477,7 +493,7 @@ def get_status(vehicle_idx, for_key=None):
                 logger.info("[Vehicle {}] [+] Updating status for '{}'".format(vehicle_idx, for_key))
                 status = v.get_status(for_key.upper())
                 cat = for_key.split("_")[0]
-                topic = "{}/status/{}/{}/value".format(MQTT_PUB_TOPIC, cat, for_key.lower())
+                topic = "{}/status/{}/{}/value".format(get_mqtt_base_topic(vehicle_idx), cat, for_key.lower())
                 mqtt_client.publish(topic, status, MQTT_QOS, True)
                 logger.info("[Vehicle {}] 1/1 {}: {}".format(vehicle_idx, for_key, status))
             
@@ -501,15 +517,23 @@ def do_command(json_data):
     try:
         get_jlr_connection()   
         if jlr_connection:
-            vehicle_idx = json_data["vehicle_index"] if "vehicle_index" in json_data else DEFAULT_VEHICLE_INDEX
-            if vehicle_idx > jlr_connection.vehicle_count - 1:
-                logger.error("Invalid vehicle index '{}'. Maximum index number allowed is {}".format(vehicle_idx, jlr_connection.vehicle_count - 1))    
-                publish_command_response({"status":"Error: '{}' command failed as vehicle index {} is invalid".format(vehicle_idx)})
-                return None
-
+            command = json_data["command"]
+            vehicle_idx = json_data["vehicle_index"] if "vehicle_index" in json_data else None
+            if MULTI_VEHICLE_SUPPORT:
+                if jlr_connection.vehicle_count == 1:
+                    if vehicle_idx is not None and vehicle_idx != 0:
+                        logger.warning("Ignoring invalid vehicle index of {} (only a single vehicle is available on the JLR connection)".format(vehicle_idx))
+                    vehicle_idx = 0
+                else:                                    
+                    if vehicle_idx is None or vehicle_idx < 0 or vehicle_idx > jlr_connection.vehicle_count - 1:
+                        logger.error("Invalid vehicle index '{}'. Index must be between 0 and {}".format(vehicle_idx, jlr_connection.vehicle_count - 1))    
+                        publish_command_response({"status":"Error: command '{}' failed as vehicle index {} is invalid".format(command, vehicle_idx)})
+                        return 
+            else:
+                vehicle_idx = 0
             v = jlr_connection.vehicles[vehicle_idx]                     
             ret = None
-            command = json_data["command"]
+            
             status_refresh_delay = DEFAULT_COMMAND_STATUS_REFRESH_DELAY
 
             # First check if we have a 'custom' command...
@@ -597,9 +621,8 @@ def do_command(json_data):
     except Exception as e:
         _, _, exc_tb = sys.exc_info()
         logger.error("{} @line number {}. json_data = '{}'".format(e, exc_tb.tb_lineno, json_data))                
-        
+     
     
-
 
 signal.signal(signal.SIGTERM, sigterm_handler)
 if not MQTT_SERVER:

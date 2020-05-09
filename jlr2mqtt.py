@@ -55,18 +55,20 @@ MQTT_QOS          = int(get_config_param(config,"MQTT", "MQTT_QOS", 0))
 MQTT_KEEPALIVE    = int(get_config_param(config,"MQTT", "MQTT_KEEPALIVE", 60))
 MQTT_RETAIN       = get_config_param(config,"MQTT", "MQTT_RETAIN", "false").lower() == "true"
 
-JLR_DEVICE_ID = get_config_param(config,"JLR", "JLR_DEVICE_ID", MQTT_CLIENTID)
-JLR_SYSTEM_SUBTOPIC = "system"
-JLR_SYSTEM_SENSOR_TYPE = "system"
-JLR_SYSTEM_TOPIC = "{}/{}".format(MQTT_PUB_TOPIC, JLR_SYSTEM_SUBTOPIC)
-MULTI_VEHICLE_SUPPORT = get_config_param(config,"JLR", "MULTI_VEHICLE_SUPPORT", "false").lower() == "true"
-
 JLR_USER = get_config_param(config,"JLR", "USER_ID", "")
 JLR_PW = get_config_param(config,"JLR", "PASSWORD", "")
 MASTER_PIN = get_config_param(config,"JLR", "PIN", None)
 
+JLR_DEVICE_ID = get_config_param(config,"JLR", "JLR_DEVICE_ID", MQTT_CLIENTID)
+
+JLR_SYSTEM_SUBTOPIC = "system"
+JLR_SYSTEM_SENSOR_TYPE = "system"
+JLR_SYSTEM_TOPIC = "{}/{}".format(MQTT_PUB_TOPIC, JLR_SYSTEM_SUBTOPIC)
+
 JLR_DEPARTURE_TIMERS_SENSOR_TYPE = "timers"
 JLR_DEPARTURE_TIMERS_COUNT_MAX = 8
+
+MULTI_VEHICLE_SUPPORT = get_config_param(config,"JLR", "MULTI_VEHICLE_SUPPORT", "true").lower() == "true"
 
 DEFAULT_COMMAND_STATUS_REFRESH_DELAY = 60
 MAX_HA_DEPARTURE_TIMERS = 7     # openHAB mqtt binding HA discovery currently doesn't seem to support arrays; Manually add discovery timers to max defind here
@@ -77,7 +79,7 @@ HOMEASSISTANT_DISCOVERY = get_config_param(config,"MISC", "HOMEASSISTANT_DISCOVE
 DISCOVERY_SENSORS_LIST =  get_config_param(config,"MISC", "DISCOVERY_SENSORS_LIST", "").replace("\n","").replace(" ","").replace("[","").replace("]","")
 
 HA_TOPIC_BASE = get_config_param(config,"MISC", "HA_TOPIC_BASE", "homeassistant").strip()
-HA_DEVICE_NAME_BASE = get_config_param(config,"MQTT", "HA_DEVICE_NAME_BASE", "Range Rover").title().strip()
+HA_DEVICE_TAG_BASE = get_config_param(config,"MQTT", "HA_DEVICE_TAG_BASE", "Range Rover").title().strip()
 
 logger = jlrpy.logger
 logger.level = LOG_LEVEL
@@ -255,7 +257,7 @@ def get_ha_disc_topic_and_config(vehicle_idx, key, value_item, category, sensor_
             device_identifier = "jlr_{}_{}".format(category, sensor_type)
             formatted_cat = category.upper() if len(category) <4 else category.title()
             formatted_cat += " Data" if sensor_type == "status" else " " + sensor_type.title()
-            device_name = "{}: {}".format(HA_DEVICE_NAME_BASE, formatted_cat)
+            device_name = "{}: {}".format(HA_DEVICE_TAG_BASE, formatted_cat)
             sensor_name = ("{} {} - {}".format(category.upper() if len(category) < 4 else category.title(),
                 sensor_type.capitalize(), key[len(category) + 1:].title())).replace("_", " ")        
             unique_id = "jlr_{}_{}".format(sensor_type.lower(), key.lower())   
@@ -274,7 +276,7 @@ def get_ha_disc_topic_and_config(vehicle_idx, key, value_item, category, sensor_
                 unique_id = "jlr_{}".format(key.lower().replace(" ","_"))   
 
             device_identifier = "jlr_{}".format(sensor_type)
-            device_name = "{}: {} Data".format(HA_DEVICE_NAME_BASE, sensor_type.upper() if len(sensor_type) < 4 else sensor_type.title().replace("_"," "))
+            device_name = "{}: {} Data".format(HA_DEVICE_TAG_BASE, sensor_type.upper() if len(sensor_type) < 4 else sensor_type.title().replace("_"," "))
 
         if is_command:
             state_command_topic = "command_topic"

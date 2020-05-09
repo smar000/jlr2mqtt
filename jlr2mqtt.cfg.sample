@@ -2,7 +2,9 @@
 USER_ID = <email address>
 PASSWORD = <password>
 PIN = <pin>
-MULTI_VEHICLE_SUPPORT = False
+
+# optional - by default multi-vehicle support is enabled. Remove comment to disable, and default to 1st vehicle
+# MULTI_VEHICLE_SUPPORT = False
 
 [MQTT]
 MQTT_USER           = <mqtt user id>
@@ -20,6 +22,9 @@ MQTT_KEEPALIVE      = 60
 # Enabling this will post Home Assistant compatible config jsons to the homeassistant/jlr2mqtt_<category> topic 
 # openHAB (and Home Assistant) should then be able to automatically discover the corresponding sensors
 HOMEASSISTANT_DISCOVERY = True
+
+# Base tag for JLR2MQTT auto-discovered devices in openHAB/HA (optional)
+HA_DEVICE_TAG_BASE = Range Rover
 
 # An empty or undefined discovery sensors list  will try to create discovery for ALL status items (which may be quite a lot). 
 # Otherwise, individual status items can be listed here. For location data, a single 'position' should be added.

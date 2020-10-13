@@ -31,7 +31,7 @@ from threading import Timer
 
 LOG_LEVEL = jlrpy.logging.INFO
 
-VERSION         = "0.9.0"
+VERSION         = "1.0.3"
 CONFIG_FILE     = "jlr2mqtt.cfg"
 
 
@@ -231,8 +231,8 @@ def init_ha_discovery_for_dict(vehicle_idx, sensors_dict, sensor_type="status"):
 
 
 def init_ha_discovery_for_standard_items(vehicle_idx):
-    """  'last_update_ts' timestamp and the 'send_command' topics are standard items  """
-    topic, config = get_ha_disc_topic_and_config(-1, JLR_SYSTEM_SUBTOPIC,"last_update_ts", None, JLR_SYSTEM_SENSOR_TYPE, False)
+    """  'last_update_ts' timestamp for status updates and the 'send_command' related topics are standard items  """
+    topic, config = get_ha_disc_topic_and_config(-1, "status","last_update_ts", None, "status", False)
     mqtt_client.publish(topic, json.dumps(config), MQTT_QOS, True)
     topic, config = get_ha_disc_topic_and_config(-1, JLR_SYSTEM_SUBTOPIC, "send_command", None, JLR_SYSTEM_SENSOR_TYPE, True)
     mqtt_client.publish(topic, json.dumps(config), MQTT_QOS, True)
@@ -372,20 +372,24 @@ def publish_command_response(response):
 def publish_status_dict(vehicle_idx, status_dict, subtopic, key="key"):
     topic_root = get_mqtt_base_topic(vehicle_idx)
     for element in status_dict:        
-        category = element[key].split("_")[0]
-        topic_base = "{}/{}/{}/{}".format(topic_root, subtopic, category, element[key].lower())
+        logger.debug("------> element: {}".format(element))
+        if key in element:
+            category = element[key].split("_")[0]
+            topic_base = "{}/{}/{}/{}".format(topic_root, subtopic, category, element[key].lower())
 
-        if len(element) == 2 and key in element and "value" in element:
-            mqtt_client.publish(topic_base, element["value"],MQTT_QOS, MQTT_RETAIN)
+            if len(element) == 2 and key in element and "value" in element:
+                mqtt_client.publish(topic_base, element["value"],MQTT_QOS, MQTT_RETAIN)
+            else:
+                for prop in element:
+                    if prop != key:
+                        topic = "{}/{}".format(topic_base, prop)
+                        mqtt_client.publish(topic, element[prop], MQTT_QOS, MQTT_RETAIN)
+        
+            mqtt_client.publish("{}/status/last_update_ts".format(topic_root), get_timestamp_string(), MQTT_QOS, MQTT_RETAIN)    
+            update_ha_availablity()
         else:
-            for prop in element:
-                if prop != key:
-                    topic = "{}/{}".format(topic_base, prop)
-                    mqtt_client.publish(topic, element[prop], MQTT_QOS, MQTT_RETAIN)
-    
-    mqtt_client.publish("{}/last_update_ts".format(topic_root), get_timestamp_string(), MQTT_QOS, MQTT_RETAIN)    
-    update_ha_availablity()
-    
+            logger.debug("publish_status_dict:  key '{}' not found in element: {}".format(key, element))
+                
 
 def publish_departure_timers(vehicle_idx, timers):
     update_ha_availablity()
@@ -457,24 +461,29 @@ def get_status(vehicle_idx, for_key=None):
                 alerts = full_status["vehicleAlerts"] if "vehicleAlerts" in full_status else {}
                 status = full_status["vehicleStatus"] if "vehicleStatus" in full_status else {}
                 location = v.get_position()
-                publish_status_dict(vehicle_idx, status, "status")
-                logger.info("[Vehicle {}] 1/{} Status data published to mqtt".format(vehicle_idx, count))
+
+                # 13/10/2020 status response from JLR is now split into "coreStatus" and "evStatus"
+                publish_status_dict(vehicle_idx, status["coreStatus"], "status")
+                logger.info("[Vehicle {}] 1/{} coreStatus data published to mqtt".format(vehicle_idx, count))
+
+                publish_status_dict(vehicle_idx, status["evStatus"], "status")
+                logger.info("[Vehicle {}] 2/{} evStatus data published to mqtt".format(vehicle_idx, count))
                 
                 publish_status_dict(vehicle_idx, alerts, "alerts")
-                logger.info("[Vehicle {}] 2/{} Alerts information published to mqtt".format(vehicle_idx, count))
+                logger.info("[Vehicle {}] 3/{} Alerts information published to mqtt".format(vehicle_idx, count))
                 
                 if "position" in location:
                     publish_position(vehicle_idx, location)
                     if "longitude" in location["position"] and "latitude" in location["position"]:
                         get_and_publish_reverse_geocode(vehicle_idx, location["position"])                        
-                logger.info("[Vehicle {}] 3/{} Location data published to mqtt".format(vehicle_idx, count))
+                logger.info("[Vehicle {}] 4/{} Location data published to mqtt".format(vehicle_idx, count))
                 
                 timers = get_departure_timers(v)
                 publish_departure_timers(vehicle_idx, timers)
                 if timers:
-                    logger.info("[Vehicle {}] 4/{} '{}' departure timer(s) published to mqtt".format(vehicle_idx, count, len(timers)))
+                    logger.info("[Vehicle {}] 5/{} '{}' departure timer(s) published to mqtt".format(vehicle_idx, count, len(timers)))
                 else:
-                    logger.info("[Vehicle {}] 4/{} No departure timers found".format(vehicle_idx, count))
+                    logger.info("[Vehicle {}] 5/{} No departure timers found".format(vehicle_idx, count))
                 
                 if HOMEASSISTANT_DISCOVERY and not ha_discovery_initalised:
                     init_ha_discovery_for_dict(vehicle_idx, status, "status")
@@ -489,7 +498,7 @@ def get_status(vehicle_idx, for_key=None):
                             
                     init_ha_discovery_for_standard_items(vehicle_idx)
                     ha_discovery_initalised = True
-                    logger.info("[Vehicle {}] 5/{} HomeAssistant auto discovery topics published".format(vehicle_idx, count))
+                    logger.info("[Vehicle {}] 6/{} HomeAssistant auto discovery topics published".format(vehicle_idx, count))
                   
             else:
                 logger.info("[Vehicle {}] [+] Updating status for '{}'".format(vehicle_idx, for_key))

@@ -31,7 +31,7 @@ from threading import Timer
 
 LOG_LEVEL = jlrpy.logging.INFO
 
-VERSION         = "1.0.3"
+VERSION         = "1.0.4"
 CONFIG_FILE     = "jlr2mqtt.cfg"
 
 
@@ -454,7 +454,7 @@ def get_status(vehicle_idx, for_key=None):
         try:            
             v = jlr_connection.vehicles[vehicle_idx]
             global ha_discovery_initalised
-            count = 4 if ha_discovery_initalised else 5
+            count = 5 if ha_discovery_initalised else 5
             if not for_key:
                 logger.info("[Vehicle {}] [+] Getting complete status data from JLR".format(vehicle_idx))
                 full_status = v.get_status()
@@ -462,11 +462,12 @@ def get_status(vehicle_idx, for_key=None):
                 status = full_status["vehicleStatus"] if "vehicleStatus" in full_status else {}
                 location = v.get_position()
 
-                # 13/10/2020 status response from JLR is now split into "coreStatus" and "evStatus"
+                # 13/10/2020 status response from JLR is now split into "coreStatus" and "evStatus"                
                 publish_status_dict(vehicle_idx, status["coreStatus"], "status")
                 logger.info("[Vehicle {}] 1/{} coreStatus data published to mqtt".format(vehicle_idx, count))
-
-                publish_status_dict(vehicle_idx, status["evStatus"], "status")
+                logger.info("{}".format(status["coreStatus"]))
+                
+                publish_status_dict(vehicle_idx, status["evStatus"][0:4], "status")
                 logger.info("[Vehicle {}] 2/{} evStatus data published to mqtt".format(vehicle_idx, count))
                 
                 publish_status_dict(vehicle_idx, alerts, "alerts")
@@ -633,7 +634,6 @@ def do_command(json_data):
         _, _, exc_tb = sys.exc_info()
         logger.error("{} @line number {}. json_data = '{}'".format(e, exc_tb.tb_lineno, json_data))                
      
-    
 
 signal.signal(signal.SIGTERM, sigterm_handler)
 if not MQTT_SERVER:

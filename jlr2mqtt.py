@@ -31,7 +31,7 @@ from threading import Timer
 
 LOG_LEVEL = jlrpy.logging.INFO
 
-VERSION         = "1.0.4"
+VERSION         = "1.0.5"
 CONFIG_FILE     = "jlr2mqtt.cfg"
 
 
@@ -108,14 +108,11 @@ def initialise_mqtt_client(mqtt_client):
         mqtt_client.username_pw_set(MQTT_USER, MQTT_PW)
     mqtt_client.on_connect = mqtt_on_connect
     mqtt_client.on_message = mqtt_on_message
-    # mqtt_client.on_log = mqtt_on_log
-    mqtt_client.on_disconnect = mqtt_on_disconnect
-
-    logger.info("Connecting to mqtt server %s" % MQTT_SERVER)
-    mqtt_client.connect(MQTT_SERVER, port=1883, keepalive=MQTT_KEEPALIVE, bind_address="")
     
-    logger.info("Subscribing to mqtt topic '%s' for inbound commands" % MQTT_SUB_TOPIC)
-    mqtt_client.subscribe(MQTT_SUB_TOPIC)
+    logger.info("Connecting to mqtt server %s" % MQTT_SERVER)
+    mqtt_client.connect(MQTT_SERVER, port=1883, keepalive=MQTT_KEEPALIVE, bind_address="")    
+    # mqtt_client.on_log = mqtt_on_log
+    # mqtt_client.on_disconnect = mqtt_on_disconnect
 
     return mqtt_client
 
@@ -127,6 +124,9 @@ def mqtt_on_connect(client, userdata, flags, rc):
         client.is_connected = True #set flag to track status
         logger.info("MQTT connection established with broker")
         update_state_on_mqtt("online")
+        
+        logger.info("Subscribing to mqtt topic '%s' for inbound commands" % MQTT_SUB_TOPIC)
+        mqtt_client.subscribe(MQTT_SUB_TOPIC)
     else:
         logger.error("MQTT connection failed (code {})".format(rc))
         logger.debug(" mqtt userdata: {}, flags: {}, client: {}".format(userdata, flags, client))
@@ -372,10 +372,11 @@ def publish_command_response(response):
 def publish_status_dict(vehicle_idx, status_dict, subtopic, key="key"):
     topic_root = get_mqtt_base_topic(vehicle_idx)
     for element in status_dict:        
-        logger.debug("------> element: {}".format(element))
+        
         if key in element:
             category = element[key].split("_")[0]
             topic_base = "{}/{}/{}/{}".format(topic_root, subtopic, category, element[key].lower())
+            logger.debug("------> publishing to topic:{}, element: {}".format(topic_base, element))
 
             if len(element) == 2 and key in element and "value" in element:
                 mqtt_client.publish(topic_base, element["value"],MQTT_QOS, MQTT_RETAIN)
@@ -385,8 +386,7 @@ def publish_status_dict(vehicle_idx, status_dict, subtopic, key="key"):
                         topic = "{}/{}".format(topic_base, prop)
                         mqtt_client.publish(topic, element[prop], MQTT_QOS, MQTT_RETAIN)
         
-            mqtt_client.publish("{}/status/last_update_ts".format(topic_root), get_timestamp_string(), MQTT_QOS, MQTT_RETAIN)    
-            update_ha_availablity()
+            mqtt_client.publish("{}/status/last_update_ts".format(topic_root), get_timestamp_string(), MQTT_QOS, MQTT_RETAIN)                
         else:
             logger.debug("publish_status_dict:  key '{}' not found in element: {}".format(key, element))
                 
@@ -460,14 +460,16 @@ def get_status(vehicle_idx, for_key=None):
                 full_status = v.get_status()
                 alerts = full_status["vehicleAlerts"] if "vehicleAlerts" in full_status else {}
                 status = full_status["vehicleStatus"] if "vehicleStatus" in full_status else {}
+                logger.debug("Full status dict:\n{}".format(json.dumps(status)))
+                
                 location = v.get_position()
 
                 # 13/10/2020 status response from JLR is now split into "coreStatus" and "evStatus"                
                 publish_status_dict(vehicle_idx, status["coreStatus"], "status")
                 logger.info("[Vehicle {}] 1/{} coreStatus data published to mqtt".format(vehicle_idx, count))
-                logger.info("{}".format(status["coreStatus"]))
+                # logger.debug("{}".format(status["coreStatus"]))
                 
-                publish_status_dict(vehicle_idx, status["evStatus"][0:4], "status")
+                publish_status_dict(vehicle_idx, status["evStatus"], "status")
                 logger.info("[Vehicle {}] 2/{} evStatus data published to mqtt".format(vehicle_idx, count))
                 
                 publish_status_dict(vehicle_idx, alerts, "alerts")
@@ -612,7 +614,8 @@ def do_command(json_data):
             
             publish_command_response(ret)
 
-            last_command_service_id = ret["customerServiceId"] if ret and "customerServiceId" in ret and ret["customerServiceId"] else None
+            last_command_service_id = ret["customerServiceId"] if ret and "customerServiceId" in ret and ret["customerServiceId"] else None           
+            update_ha_availablity()
 
             if ret and "status" in ret and not "Error" in ret["status"]:
                 refresh_notice = ". Status will be refreshed in {} seconds".format(status_refresh_delay) if status_refresh_delay > 0 else ""

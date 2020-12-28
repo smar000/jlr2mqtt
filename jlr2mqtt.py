@@ -29,9 +29,7 @@ import os,sys
 import signal
 from threading import Timer
 
-LOG_LEVEL = jlrpy.logging.INFO
-
-VERSION         = "1.0.5"
+VERSION         = "1.0.7"
 CONFIG_FILE     = "jlr2mqtt.cfg"
 
 
@@ -41,9 +39,10 @@ def get_config_param(config,section,name,default):
     else:
         return default
 
-
 config = configparser.RawConfigParser()
 config.read(CONFIG_FILE)
+
+LOG_LEVEL         = get_config_param(config,"MISC", "LOG_LEVEL", "DEBUG")                  
 
 MQTT_SERVER       = get_config_param(config,"MQTT", "MQTT_SERVER", "")                  
 MQTT_SUB_TOPIC    = get_config_param(config,"MQTT", "MQTT_SUB_TOPIC", "").rstrip('/')               
@@ -82,7 +81,7 @@ HA_TOPIC_BASE = get_config_param(config,"MISC", "HA_TOPIC_BASE", "homeassistant"
 HA_DEVICE_TAG_BASE = get_config_param(config,"MQTT", "HA_DEVICE_TAG_BASE", "Range Rover").title().strip()
 
 logger = jlrpy.logger
-logger.level = LOG_LEVEL
+logger.level = getattr(jlrpy.logging, LOG_LEVEL)
 
 jlr_connection = None
 status_refresh_timer = None
@@ -124,25 +123,30 @@ def mqtt_on_connect(client, userdata, flags, rc):
         client.is_connected = True #set flag to track status
         logger.info("MQTT connection established with broker")
         update_state_on_mqtt("online")
-        
-        logger.info("Subscribing to mqtt topic '%s' for inbound commands" % MQTT_SUB_TOPIC)
-        mqtt_client.subscribe(MQTT_SUB_TOPIC)
+        try:            
+            mqtt_client.subscribe(MQTT_SUB_TOPIC)
+            logger.info("Subscribed to mqtt topic '%s' for inbound commands" % MQTT_SUB_TOPIC)
+        except Exception as e:
+            display_and_log ("ERROR", "'{}' on line {} ".format(str(e), sys.exc_info()[-1].tb_lineno))
+            print(traceback.format_exc())
+            return None
     else:
         logger.error("MQTT connection failed (code {})".format(rc))
         logger.debug(" mqtt userdata: {}, flags: {}, client: {}".format(userdata, flags, client))
+        
     return client
 
 
-def mqtt_on_disconnect(client, userdata, rc):
-    """ mqtt disconnection event processing """
-    client.is_connected = False
-    update_state_on_mqtt("offline")
-    client.loop_stop()
-    if rc != 0:
-        logger.warning("Unexpected MQTT broker disconnection")        
-        logger.debug("[DEBUG] mqtt rc: {}, userdata: {}, client: {}".format(rc, userdata, client))
-        initialise_mqtt_client(mqtt_client)
-    return client
+# def mqtt_on_disconnect(client, userdata, rc):
+#     """ mqtt disconnection event processing """
+#     client.is_connected = False
+#     update_state_on_mqtt("offline")
+#     client.loop_stop()
+#     if rc != 0:
+#         logger.warning("Unexpected MQTT broker disconnection")        
+#         logger.debug("[DEBUG] mqtt rc: {}, userdata: {}, client: {}".format(rc, userdata, client))
+#         initialise_mqtt_client(mqtt_client)
+#     return client
 
 
 def mqtt_on_log(client, obj, level, string):
@@ -154,7 +158,7 @@ def mqtt_on_log(client, obj, level, string):
 def mqtt_on_message(client, userdata, msg):
     """ mqtt message received on subscribed topic """
     
-    logger.debug("Incoming message received: {}".format(msg.payload))
+    logger.info("MQTT message received: {}".format(msg.payload))
     try:
         payload = str(msg.payload, 'utf-8')
         json_data = json.loads(payload)
@@ -221,6 +225,7 @@ def init_ha_discovery_for_dict(vehicle_idx, sensors_dict, sensor_type="status"):
                         if value_item != "key":
                             topic, config = get_ha_disc_topic_and_config(vehicle_idx, key, value_item, category, sensor_type)  
                             mqtt_client.publish(topic, json.dumps(config), MQTT_QOS, True)
+                            logger.debug("HA_init: Published topic: {}".format(topic))
             else:
                 logger.debug("HA_init: Dropping {}".format(key))
             
@@ -385,8 +390,7 @@ def publish_status_dict(vehicle_idx, status_dict, subtopic, key="key"):
                     if prop != key:
                         topic = "{}/{}".format(topic_base, prop)
                         mqtt_client.publish(topic, element[prop], MQTT_QOS, MQTT_RETAIN)
-        
-            mqtt_client.publish("{}/status/last_update_ts".format(topic_root), get_timestamp_string(), MQTT_QOS, MQTT_RETAIN)                
+                    
         else:
             logger.debug("publish_status_dict:  key '{}' not found in element: {}".format(key, element))
                 
@@ -489,7 +493,8 @@ def get_status(vehicle_idx, for_key=None):
                     logger.info("[Vehicle {}] 5/{} No departure timers found".format(vehicle_idx, count))
                 
                 if HOMEASSISTANT_DISCOVERY and not ha_discovery_initalised:
-                    init_ha_discovery_for_dict(vehicle_idx, status, "status")
+                    init_ha_discovery_for_dict(vehicle_idx, status["coreStatus"], "status")
+                    init_ha_discovery_for_dict(vehicle_idx, status["evStatus"], "status")
                     
                     if "alerts_" in DISCOVERY_SENSORS_LIST:
                         init_ha_discovery_for_dict(vehicle_idx, alerts, "alerts")
@@ -502,7 +507,8 @@ def get_status(vehicle_idx, for_key=None):
                     init_ha_discovery_for_standard_items(vehicle_idx)
                     ha_discovery_initalised = True
                     logger.info("[Vehicle {}] 6/{} HomeAssistant auto discovery topics published".format(vehicle_idx, count))
-                  
+
+                mqtt_client.publish("{}/status/last_update_ts".format(get_mqtt_base_topic(vehicle_idx)), get_timestamp_string(), MQTT_QOS, MQTT_RETAIN)                  
             else:
                 logger.info("[Vehicle {}] [+] Updating status for '{}'".format(vehicle_idx, for_key))
                 status = v.get_status(for_key.upper())

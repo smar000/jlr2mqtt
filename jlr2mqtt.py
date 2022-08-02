@@ -108,8 +108,6 @@ def initialise_mqtt_client(mqtt_client):
     logger.info("Connecting to mqtt server %s" % MQTT_SERVER)
     mqtt_client.connect(MQTT_SERVER, port=1883, keepalive=MQTT_KEEPALIVE, bind_address="")
 
-    logger.info("Subscribing to mqtt topic '%s' for inbound commands" % MQTT_SUB_TOPIC)
-    mqtt_client.subscribe(MQTT_SUB_TOPIC)
 
     return mqtt_client
 
@@ -120,6 +118,8 @@ def mqtt_on_connect(client, userdata, flags, rc):
     if rc == 0:
         client.connected_flag = True #set flag
         logger.info("MQTT connection established with broker")
+        logger.info("Subscribing to mqtt topic '%s' for inbound commands" % MQTT_SUB_TOPIC)
+        mqtt_client.subscribe(MQTT_SUB_TOPIC)
         update_state_on_mqtt("online")
     else:
         logger.error("MQTT connection failed (code {})".format(rc))
@@ -424,8 +424,8 @@ def get_status(for_key=None):
                 
                 if "position" in location:
                     publish_position(location)
-                    if "longitude" in location["position"] and "latitude" in location["position"]:
-                        get_and_publish_reverse_geocode(location["position"])                        
+                    #if "longitude" in location["position"] and "latitude" in location["position"]:
+                    #   get_and_publish_reverse_geocode(location["position"])                        
                 logger.info("3/{} Location data published to mqtt".format(count))
                 
                 timers = get_departure_timers(v)

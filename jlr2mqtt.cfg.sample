@@ -18,13 +18,13 @@ MQTT_KEEPALIVE      = 60
 
 [MISC]
 # Enabling this will post Home Assistant compatible config jsons to the homeassistant/jlr2mqtt_<category> topic 
-# openHAB (and Home Assistant) should then be able to automatically discover the corresponding sensors
-HOMEASSISTANT_DISCOVERY = True
+# openHAB (and Home Assistant) should then be able to automatically discover the corresponding sensors (case sensitive "true")
+HOMEASSISTANT_DISCOVERY = true
 
 # An empty or undefined discovery sensors list  will try to create discovery for ALL status items (which may be quite a lot). 
 # Otherwise, individual status items can be listed here. For location data, a single 'position' should be added.
 # Comma separated. 
-DISCOVERY_SENSORS_LIST = "ev_charging_status, ev_state_of_charge, ev_charging_method, ev_minutes_to_fully_charged, ev_range_battery_miles,
+DISCOVERY_SENSORS_LIST = "ev_charging_status, ev_state_of_charge, ev_charging_method, ev_minutes_to_fully_charged, ev_range_on_battery_miles,
     door_is_all_doors_locked, ev_preconditioning_mode, 
     alerts_preconditioning_started, alerts_preconditioning_not_ok_soc, alerts_preconditioning_stopped,
     position" 

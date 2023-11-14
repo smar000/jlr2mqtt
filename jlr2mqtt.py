@@ -1,5 +1,5 @@
 """
-A simple mqtt wrapper around @ardevd's 'jlrpy' python library (https://github.com/ardevd/jlrpy), for accessing Jaguar Land Rover's 
+A simple mqtt wrapper around @ardevd's 'jlrpy' python library (https://github.com/ardevd/jlrpy), for accessing Jaguar Land Rover's
 Remote Car API (https://documenter.getpostman.com/view/6250319/RznBMzqo?version=latest#intro).
 
 Requires paho-mqtt and python 3.
@@ -13,7 +13,7 @@ being called. Function names are exactly as defined in the `jlrpy.py` library, w
     2. To refresh the current vehicle status:
         {"command":"get_status"}
 
-Note that not all functions are directly supported, i.e. not all functions are pre-processed; they are called as is, along with the 
+Note that not all functions are directly supported, i.e. not all functions are pre-processed; they are called as is, along with the
 single argument. In these cases, it is up to the user to ensure that the correctly formatted parameter is sent in the single arg (if at all possible).
 
 """
@@ -24,12 +24,13 @@ import paho.mqtt.client as mqtt
 import traceback
 import json
 import re
-import datetime, time
+import datetime, pytz
 import os,sys
 import signal
 from threading import Timer
+from urllib.error import HTTPError
 
-VERSION         = "1.0.7"
+VERSION         = "1.1.0"
 CONFIG_FILE     = "jlr2mqtt.cfg"
 
 
@@ -42,10 +43,10 @@ def get_config_param(config,section,name,default):
 config = configparser.RawConfigParser()
 config.read(CONFIG_FILE)
 
-LOG_LEVEL         = get_config_param(config,"MISC", "LOG_LEVEL", "DEBUG")                  
+LOG_LEVEL         = get_config_param(config,"MISC", "LOG_LEVEL", "DEBUG")
 
-MQTT_SERVER       = get_config_param(config,"MQTT", "MQTT_SERVER", "")                  
-MQTT_SUB_TOPIC    = get_config_param(config,"MQTT", "MQTT_SUB_TOPIC", "").rstrip('/')               
+MQTT_SERVER       = get_config_param(config,"MQTT", "MQTT_SERVER", "")
+MQTT_SUB_TOPIC    = get_config_param(config,"MQTT", "MQTT_SUB_TOPIC", "").rstrip('/')
 MQTT_PUB_TOPIC    = get_config_param(config,"MQTT", "MQTT_PUB_TOPIC", "jlr2mqtt").rstrip('/')
 MQTT_USER         = get_config_param(config,"MQTT", "MQTT_USER", "")
 MQTT_PW           = get_config_param(config,"MQTT", "MQTT_PASSWORD", "")
@@ -68,6 +69,8 @@ JLR_DEPARTURE_TIMERS_SENSOR_TYPE = "timers"
 JLR_DEPARTURE_TIMERS_COUNT_MAX = 8
 
 MULTI_VEHICLE_SUPPORT = get_config_param(config,"JLR", "MULTI_VEHICLE_SUPPORT", "true").lower() == "true"
+FILTER_VIN = get_config_param(config,"JLR", "FILTER_VIN", None)
+VEHICLE_IDX = 0
 
 DEFAULT_COMMAND_STATUS_REFRESH_DELAY = 60
 MAX_HA_DEPARTURE_TIMERS = 7     # openHAB mqtt binding HA discovery currently doesn't seem to support arrays; Manually add discovery timers to max defind here
@@ -78,7 +81,10 @@ HOMEASSISTANT_DISCOVERY = get_config_param(config,"MISC", "HOMEASSISTANT_DISCOVE
 DISCOVERY_SENSORS_LIST =  get_config_param(config,"MISC", "DISCOVERY_SENSORS_LIST", "").replace("\n","").replace(" ","").replace("[","").replace("]","")
 
 HA_TOPIC_BASE = get_config_param(config,"MISC", "HA_TOPIC_BASE", "homeassistant").strip()
-HA_DEVICE_TAG_BASE = get_config_param(config,"MQTT", "HA_DEVICE_TAG_BASE", "Range Rover").title().strip()
+HA_DEVICE_TAG_BASE = get_config_param(config,"MISC", "HA_DEVICE_TAG_BASE", "JLR").title().strip()
+HA_DEVICE_NAME_PREFIX = get_config_param(config,"MISC", "HA_DEVICE_NAME_PREFIX", "").title().strip()
+
+GEO_DECODE_LOCATION = get_config_param(config,"MISC", "GEO_DECODE_LOCATION", "false").lower() == "true"
 
 logger = jlrpy.logger
 logger.level = getattr(jlrpy.logging, LOG_LEVEL)
@@ -107,11 +113,11 @@ def initialise_mqtt_client(mqtt_client):
         mqtt_client.username_pw_set(MQTT_USER, MQTT_PW)
     mqtt_client.on_connect = mqtt_on_connect
     mqtt_client.on_message = mqtt_on_message
-    
+
     logger.info("Connecting to mqtt server %s" % MQTT_SERVER)
-    mqtt_client.connect(MQTT_SERVER, port=1883, keepalive=MQTT_KEEPALIVE, bind_address="")    
+    mqtt_client.connect(MQTT_SERVER, port=1883, keepalive=MQTT_KEEPALIVE, bind_address="")
     # mqtt_client.on_log = mqtt_on_log
-    # mqtt_client.on_disconnect = mqtt_on_disconnect
+    mqtt_client.on_disconnect = mqtt_on_disconnect
 
     return mqtt_client
 
@@ -123,30 +129,30 @@ def mqtt_on_connect(client, userdata, flags, rc):
         client.is_connected = True #set flag to track status
         logger.info("MQTT connection established with broker")
         update_state_on_mqtt("online")
-        try:            
+        try:
             mqtt_client.subscribe(MQTT_SUB_TOPIC)
             logger.info("Subscribed to mqtt topic '%s' for inbound commands" % MQTT_SUB_TOPIC)
         except Exception as e:
-            display_and_log ("ERROR", "'{}' on line {} ".format(str(e), sys.exc_info()[-1].tb_lineno))
+            print("'{}' on line {} ".format(str(e), sys.exc_info()[-1].tb_lineno))
             print(traceback.format_exc())
             return None
     else:
         logger.error("MQTT connection failed (code {})".format(rc))
         logger.debug(" mqtt userdata: {}, flags: {}, client: {}".format(userdata, flags, client))
-        
+
     return client
 
 
-# def mqtt_on_disconnect(client, userdata, rc):
-#     """ mqtt disconnection event processing """
-#     client.is_connected = False
-#     update_state_on_mqtt("offline")
-#     client.loop_stop()
-#     if rc != 0:
-#         logger.warning("Unexpected MQTT broker disconnection")        
-#         logger.debug("[DEBUG] mqtt rc: {}, userdata: {}, client: {}".format(rc, userdata, client))
-#         initialise_mqtt_client(mqtt_client)
-#     return client
+def mqtt_on_disconnect(client, userdata, rc):
+    """ mqtt disconnection event processing """
+    client.is_connected = False
+    update_state_on_mqtt("offline")
+    # client.loop_stop()
+    if rc != 0:
+        logger.warning("Unexpected MQTT broker disconnection")
+        logger.debug("[DEBUG] mqtt rc: {}, userdata: {}, client: {}".format(rc, userdata, client))
+        initialise_mqtt_client(mqtt_client)
+    return client
 
 
 def mqtt_on_log(client, obj, level, string):
@@ -157,25 +163,25 @@ def mqtt_on_log(client, obj, level, string):
 
 def mqtt_on_message(client, userdata, msg):
     """ mqtt message received on subscribed topic """
-    
+
     logger.info("MQTT message received: {}".format(msg.payload))
     try:
         payload = str(msg.payload, 'utf-8')
         json_data = json.loads(payload)
         if "command" in json_data:
             mqtt_client.publish("{}/send_command_ts".format(JLR_SYSTEM_TOPIC), get_timestamp_string(), 0, True)
-            do_command(json_data)            
+            do_command(json_data)
         else:
             mqtt_client.publish("{}/send_command_response_ts".format(JLR_SYSTEM_TOPIC),"", 0, True)
             logger.error("Command not recognised: {}".format(json_data))
 
     except Exception as e:
         _, _, exc_tb = sys.exc_info()
-        logger.error("{} (line {})".format(e, exc_tb.tb_lineno))                
+        logger.error("{} (line {})".format(e, exc_tb.tb_lineno))
         logger.error("msg.payload: {} (payload str: '{}')".format(msg.payload, payload))
         msg = {"Status": "Error", "errorDescription": "{} (line {})".format(e, exc_tb.tb_lineno)}
-        publish_command_response("{}".format(msg)) 
-    
+        publish_command_response("{}".format(msg))
+
 
 def update_state_on_mqtt(state):
     mqtt_client.publish("{}/state".format(MQTT_PUB_TOPIC), state, MQTT_QOS, True)
@@ -185,17 +191,17 @@ def update_state_on_mqtt(state):
 
 def update_ha_availablity():
     """ Update 'availability' status for HA discovery. This needs to be done from time to time. !TODO Check required frequency """
-    if jlr_connection is not None: 
-        update_state_on_mqtt("online") 
+    if jlr_connection is not None:
+        update_state_on_mqtt("online")
     else:
-        update_state_on_mqtt("offline") 
+        update_state_on_mqtt("offline")
 
 
 def log_system_error(error, line_number=None):
-    desc = "{} (line {})".format(error, line_number) if line_number else "{}".format(error) 
+    desc = "{} (line {})".format(error, line_number) if line_number else "{}".format(error)
     logger.error(desc)
-    msg = {"Status": "Error", "errorDescription": desc}    
-    publish_command_response("{}".format(msg)) 
+    msg = {"Status": "Error", "errorDescription": desc}
+    publish_command_response("{}".format(msg))
 
 
 def get_category_from_key(key):
@@ -213,26 +219,26 @@ def init_ha_discovery_for_dict(vehicle_idx, sensors_dict, sensor_type="status"):
             # Use the "key" value from the status dict item if available, otherwise fallback to:
             # (a) using the parent name, e.g. for alerts such as "preconditioning_started" with children "value", "active" and "lastUpdatedTime", or
             # (b) the object item itself if there is no further children, e.g. "longitude"
-            
-            key = sensor["key"] if "key" in sensor else sensor
-            if len(DISCOVERY_SENSORS_LIST) == 0 or key.lower() in DISCOVERY_SENSORS_LIST or (sensor_type == "location" and 
-                "position" in DISCOVERY_SENSORS_LIST): 
 
-                category = get_category_from_key(key) 
+            key = sensor["key"] if "key" in sensor else sensor
+            if len(DISCOVERY_SENSORS_LIST) == 0 or key.lower() in DISCOVERY_SENSORS_LIST or (sensor_type == "location" and
+                "position" in DISCOVERY_SENSORS_LIST):
+
+                category = get_category_from_key(key)
                 sensor_obj = sensor if sensor_type != "location" else sensors_dict[sensor]
                 if sensor_obj:
                     for value_item in sensor_obj:
                         if value_item != "key":
-                            topic, config = get_ha_disc_topic_and_config(vehicle_idx, key, value_item, category, sensor_type)  
+                            topic, config = get_ha_disc_topic_and_config(vehicle_idx, key, value_item, category, sensor_type)
                             mqtt_client.publish(topic, json.dumps(config), MQTT_QOS, True)
                             logger.debug("HA_init: Published topic: {}".format(topic))
             else:
                 logger.debug("HA_init: Dropping {}".format(key))
-            
+
         logger.debug("HomeAssistant configuration topics for '{}' published".format(sensor_type))
     except Exception as e:
         _, _, exc_tb = sys.exc_info()
-        logger.error("{} (line {})".format(e, exc_tb.tb_lineno))                
+        logger.error("{} (line {})".format(e, exc_tb.tb_lineno))
 
 
 def init_ha_discovery_for_standard_items(vehicle_idx):
@@ -247,7 +253,7 @@ def init_ha_discovery_for_standard_items(vehicle_idx):
     mqtt_client.publish(topic, json.dumps(config), MQTT_QOS, True)
     topic, config = get_ha_disc_topic_and_config(-1, JLR_SYSTEM_SUBTOPIC, "send_command_service_id", None, JLR_SYSTEM_SENSOR_TYPE, False)
     mqtt_client.publish(topic, json.dumps(config), MQTT_QOS, True)
-    
+
     # Departure timers
     for count in range(JLR_DEPARTURE_TIMERS_COUNT_MAX):
         topic, config = get_ha_disc_topic_and_config(vehicle_idx, "departure_timers", str(count), None, JLR_DEPARTURE_TIMERS_SENSOR_TYPE, False)
@@ -257,28 +263,29 @@ def init_ha_discovery_for_standard_items(vehicle_idx):
 def get_ha_disc_topic_and_config(vehicle_idx, key, value_item, category, sensor_type="status", is_command=False):
     try:
         topic_base = get_mqtt_base_topic(vehicle_idx)
+        ha_device_prefix = HA_DEVICE_NAME_PREFIX + " " if HA_DEVICE_NAME_PREFIX else ""
         if category:
-            state_topic = "{}/{}/{}/{}".format(topic_base, sensor_type, category.upper(), key.lower())         
+            state_topic = "{}/{}/{}/{}".format(topic_base, sensor_type, category.upper(), key.lower())
             device_identifier = "jlr_{}_{}".format(category, sensor_type)
             formatted_cat = category.upper() if len(category) <4 else category.title()
             formatted_cat += " Data" if sensor_type == "status" else " " + sensor_type.title()
             device_name = "{}: {}".format(HA_DEVICE_TAG_BASE, formatted_cat)
             sensor_name = ("{} {} - {}".format(category.upper() if len(category) < 4 else category.title(),
-                sensor_type.capitalize(), key[len(category) + 1:].title())).replace("_", " ")        
-            unique_id = "jlr_{}_{}".format(sensor_type.lower(), key.lower())   
+                sensor_type.capitalize(), key[len(category) + 1:].title())).replace("_", " ")
+            unique_id = "jlr_{}_{}".format(sensor_type.lower(), key.lower())
             if sensor_type != "status":
                 sensor_name = "{}: {}".format(sensor_name, value_item)
                 unique_id = "{}_{}".format(unique_id, value_item.lower())
                 state_topic = "{}/{}".format(state_topic, value_item.lower())
         else:
             if value_item:
-                state_topic = "{}/{}/{}".format(topic_base, key.lower(), value_item.lower()) 
+                state_topic = "{}/{}/{}".format(topic_base, key.lower(), value_item.lower())
                 sensor_name = "{} {}: {}".format(sensor_type.replace("_", " ").title(), key.title().replace("_", " "), value_item)
-                unique_id = "jlr_{}_{}".format(key.lower().replace(" ","_"), value_item.lower())   
+                unique_id = "jlr_{}_{}".format(key.lower().replace(" ","_"), value_item.lower())
             else:
-                state_topic = "{}/{}".format(topic_base, key.lower()) 
+                state_topic = "{}/{}".format(topic_base, key.lower())
                 sensor_name = "{}: {}".format(sensor_type.title().replace("_"," "), key)
-                unique_id = "jlr_{}".format(key.lower().replace(" ","_"))   
+                unique_id = "jlr_{}".format(key.lower().replace(" ","_"))
 
             device_identifier = "jlr_{}".format(sensor_type)
             device_name = "{}: {} Data".format(HA_DEVICE_TAG_BASE, sensor_type.upper() if len(sensor_type) < 4 else sensor_type.title().replace("_"," "))
@@ -287,7 +294,7 @@ def get_ha_disc_topic_and_config(vehicle_idx, key, value_item, category, sensor_
             state_command_topic = "command_topic"
         else:
             state_command_topic = "state_topic"
-            
+
         config = {
             # "value_template": "{{ value }}",
             state_command_topic: state_topic,
@@ -296,30 +303,30 @@ def get_ha_disc_topic_and_config(vehicle_idx, key, value_item, category, sensor_
             "device": {"identifiers": [device_identifier],
                 "name": device_name,
                 "model": "Remote API Status: {}".format(key),
-                "manufacturer": "Land Rover Jaguar"
+                "manufacturer": "Jaguar Land Rover"
             },
             "availability_topic": "{}/state".format(MQTT_PUB_TOPIC),
             "payload_available": "online",
-            "payload_not_available": "offline"        
+            "payload_not_available": "offline"
         }
-            
+
         if sensor_type == "status":
             config_parent_topic = key[len(category) + 1:].lower() if category else key.lower()
             device_topic = "{}_{}".format(sensor_type.lower(),category.lower()) if category else sensor_type.lower()
         else:
             config_parent_topic = value_item if value_item else key
             device_topic = "{}_{}".format(sensor_type.lower(), key.lower()) if sensor_type not in [JLR_SYSTEM_SENSOR_TYPE, "timers"] else sensor_type
-        topic = "{}/sensor/{}_{}/{}/config".format(HA_TOPIC_BASE, topic_base, device_topic, config_parent_topic)  
+        topic = "{}/sensor/{}_{}/{}/config".format(HA_TOPIC_BASE, topic_base, device_topic, config_parent_topic)
 
         return topic, config
     except Exception as e:
         _, _, exc_tb = sys.exc_info()
-        logger.error("{} (line {})".format(e, exc_tb.tb_lineno))                
+        logger.error("{} (line {})".format(e, exc_tb.tb_lineno))
         return None, None
 
 
 def get_jlr_connection():
-    global jlr_connection    
+    global jlr_connection
     logger.debug("Checking for existing connection")
     if jlr_connection is not None:
         logger.debug("Connection found. Checking expiry")
@@ -330,12 +337,17 @@ def get_jlr_connection():
         logger.info("No existing connection to JLR available. Instantiating new connection")
         jlr_connection = jlrpy.Connection(JLR_USER, JLR_PW, JLR_DEVICE_ID)
         if jlr_connection:
+            logger.debug(f"JLR connection: {dir(jlr_connection)}")
             jlr_connection.vehicle_count = len(jlr_connection.vehicles)
             logger.info("Connected to JLR. {} vehicle{} found (multi-vehicle support {}enabled)".format(
-                jlr_connection.vehicle_count, "s" if jlr_connection.vehicle_count > 1 else "", 
+                jlr_connection.vehicle_count, "s" if jlr_connection.vehicle_count > 1 else "",
                 "" if MULTI_VEHICLE_SUPPORT else "not "))
             for i in range(jlr_connection.vehicle_count):
-                logger.info("Vehicle index {}: {}".format(i, jlr_connection.vehicles[i]))            
+                logger.info("Vehicle index {}: {}".format(i, jlr_connection.vehicles[i]))
+                if FILTER_VIN and jlr_connection.vehicles[i].vin == FILTER_VIN:
+                    logger.info(f"Selecting vehicle with vin '{jlr_connection.vehicles[i].vin}' (vehicle_idx: {i})")
+                    global VEHICLE_IDX
+                    VEHICLE_IDX = i
         else:
             logger.error("Connection to JLR failed")
             return None
@@ -346,7 +358,21 @@ def get_jlr_connection():
 
 
 def get_departure_timers(v):
-    departure_timers = v.get_departure_timers()
+    try:
+        departure_timers = v.get_departure_timers()
+    except HTTPError as e:
+        if e.code == 404:
+            return None
+        else:
+            _, _, exc_tb = sys.exc_info()
+            logger.warn("{} (line {})".format(e, exc_tb.tb_lineno))
+            return None
+    except Exception as e:
+        _, _, exc_tb = sys.exc_info()
+        # Log to debug and not error as we get HTTP 404 when no timer exists
+        logger.error("{} (line {})".format(e, exc_tb.tb_lineno))
+        return None
+
     if departure_timers and "departureTimerSetting" in departure_timers and "timers" in departure_timers["departureTimerSetting"]:
         return departure_timers["departureTimerSetting"]["timers"]
     else:
@@ -354,7 +380,8 @@ def get_departure_timers(v):
 
 
 def get_timestamp_string():
-    return datetime.datetime.now().strftime("%Y-%m-%dT%XZ")
+    tz = pytz.timezone("Europe/London")
+    return datetime.datetime.now(tz).astimezone().strftime('%Y-%m-%dT%H:%M:%S.%f')
 
 
 def get_mqtt_base_topic(vehicle_idx):
@@ -376,8 +403,8 @@ def publish_command_response(response):
 
 def publish_status_dict(vehicle_idx, status_dict, subtopic, key="key"):
     topic_root = get_mqtt_base_topic(vehicle_idx)
-    for element in status_dict:        
-        
+    for element in status_dict:
+
         if key in element:
             category = element[key].split("_")[0]
             topic_base = "{}/{}/{}/{}".format(topic_root, subtopic, category, element[key].lower())
@@ -390,33 +417,34 @@ def publish_status_dict(vehicle_idx, status_dict, subtopic, key="key"):
                     if prop != key:
                         topic = "{}/{}".format(topic_base, prop)
                         mqtt_client.publish(topic, element[prop], MQTT_QOS, MQTT_RETAIN)
-                    
+
         else:
             logger.debug("publish_status_dict:  key '{}' not found in element: {}".format(key, element))
-                
+
 
 def publish_departure_timers(vehicle_idx, timers):
     update_ha_availablity()
     topic_base = get_mqtt_base_topic(vehicle_idx)
-    # First clear any existing timers - assume max index of 10 for now
+    # First clear any existing timers - assume max index of 10 for now. We are sending {} instead of deleting the message as (a) there seems to be orphans left
+    # each time we refresh, and (b) this will stop openHAB giving errors with removed messages.
     for i in range(0,10):
-        topic = "{}/departure_timers/{}".format(topic_base, i)
-        # logger.info("[DEBUG] posting empty string to topic '{}'".format(topic)) 
-        mqtt_client.publish(topic, "", MQTT_RETAIN)    
-    
+        topic = f"{topic_base}/departure_timers/idx_{i}"
+        # logger.info("[DEBUG] posting empty string to topic '{}'".format(topic))
+        mqtt_client.publish(topic, "{}", MQTT_RETAIN)
+
     # Now do actual timers
     if timers:
         for timer in timers:
             key = timer["timerIndex"]
-            topic = "{}/departure_timers/{}".format(topic_base, key)
-            mqtt_client.publish(topic, json.dumps(timer), MQTT_RETAIN)    
+            topic = "{}/departure_timers/idx_{}".format(topic_base, key)
+            mqtt_client.publish(topic, json.dumps(timer), MQTT_RETAIN)
             logger.debug("publish_departure_timers: Publishing to '{}': '{}'".format(topic,json.dumps(timer)))
     else:
         logger.debug("publish_departure_timers: No timers found")
         topic = "{}/departure_timers".format(topic_base)
-        mqtt_client.publish(topic, "[]" , MQTT_RETAIN)    
-    
-    
+        mqtt_client.publish(topic, "[]" , MQTT_RETAIN)
+
+
 def publish_position(vehicle_idx, location):
     update_ha_availablity()
     position = location["position"]
@@ -439,10 +467,10 @@ def get_and_publish_reverse_geocode(vehicle_idx, loc_json):
             # Note that the formatted address topic is posted to the parent 'position' topic as well as the 'address' subtopic. This is to comply with
             # HomeAssitant discovery topic naming convention. Another option would be to put all the 'address' values into the main 'position' topic, instead of having
             # a child 'address' subtopic. Something to be considered later. TODO!!
-            mqtt_client.publish("{}/position/formatted_address".format(topic_base), ret["formattedAddress"], MQTT_QOS, True)    
+            mqtt_client.publish("{}/position/formatted_address".format(topic_base), ret["formattedAddress"], MQTT_QOS, True)
             for address_element in ret:
                 topic = "{}/position/address/{}".format(topic_base, address_element)
-                mqtt_client.publish(topic, ret[address_element], MQTT_QOS, True)    
+                mqtt_client.publish(topic, ret[address_element], MQTT_QOS, True)
             logger.debug("Address for location is: {}".format(ret["formattedAddress"]))
             return ret
         else:
@@ -453,62 +481,69 @@ def get_and_publish_reverse_geocode(vehicle_idx, loc_json):
         return None
 
 
-def get_status(vehicle_idx, for_key=None):        
-    if jlr_connection:        
-        try:            
+def get_status(vehicle_idx, for_key=None):
+    if jlr_connection:
+        try:
             v = jlr_connection.vehicles[vehicle_idx]
             global ha_discovery_initalised
             count = 5 if ha_discovery_initalised else 5
             if not for_key:
                 logger.info("[Vehicle {}] [+] Getting complete status data from JLR".format(vehicle_idx))
+                # Do a get_health_status first as this forces a refresh of the data at the JLR side
+                health_status = v.get_health_status()
+
+                logger.debug("Health status:\n                               {}".format(json.dumps(health_status)))
+
                 full_status = v.get_status()
                 alerts = full_status["vehicleAlerts"] if "vehicleAlerts" in full_status else {}
                 status = full_status["vehicleStatus"] if "vehicleStatus" in full_status else {}
                 logger.debug("Full status dict:\n{}".format(json.dumps(status)))
-                
-                location = v.get_position()
 
-                # 13/10/2020 status response from JLR is now split into "coreStatus" and "evStatus"                
+                location = v.get_position()
+                logger.debug("Position dict:\n                               {}".format(json.dumps(location)))
+
+                # 13/10/2020 status response from JLR is now split into "coreStatus" and "evStatus"
                 publish_status_dict(vehicle_idx, status["coreStatus"], "status")
                 logger.info("[Vehicle {}] 1/{} coreStatus data published to mqtt".format(vehicle_idx, count))
                 # logger.debug("{}".format(status["coreStatus"]))
-                
+
                 publish_status_dict(vehicle_idx, status["evStatus"], "status")
                 logger.info("[Vehicle {}] 2/{} evStatus data published to mqtt".format(vehicle_idx, count))
-                
+
                 publish_status_dict(vehicle_idx, alerts, "alerts")
                 logger.info("[Vehicle {}] 3/{} Alerts information published to mqtt".format(vehicle_idx, count))
-                
+
                 if "position" in location:
                     publish_position(vehicle_idx, location)
-                    if "longitude" in location["position"] and "latitude" in location["position"]:
-                        get_and_publish_reverse_geocode(vehicle_idx, location["position"])                        
+                    if "longitude" in location["position"] and "latitude" in location["position"] and GEO_DECODE_LOCATION:
+                        get_and_publish_reverse_geocode(vehicle_idx, location["position"])
                 logger.info("[Vehicle {}] 4/{} Location data published to mqtt".format(vehicle_idx, count))
-                
+
                 timers = get_departure_timers(v)
                 publish_departure_timers(vehicle_idx, timers)
+
                 if timers:
                     logger.info("[Vehicle {}] 5/{} '{}' departure timer(s) published to mqtt".format(vehicle_idx, count, len(timers)))
                 else:
                     logger.info("[Vehicle {}] 5/{} No departure timers found".format(vehicle_idx, count))
-                
+
                 if HOMEASSISTANT_DISCOVERY and not ha_discovery_initalised:
                     init_ha_discovery_for_dict(vehicle_idx, status["coreStatus"], "status")
                     init_ha_discovery_for_dict(vehicle_idx, status["evStatus"], "status")
-                    
+
                     if "alerts_" in DISCOVERY_SENSORS_LIST:
                         init_ha_discovery_for_dict(vehicle_idx, alerts, "alerts")
                     if "position" in DISCOVERY_SENSORS_LIST:
-                        init_ha_discovery_for_dict(vehicle_idx, location,"location")                        
+                        init_ha_discovery_for_dict(vehicle_idx, location,"location")
                         topic, config = get_ha_disc_topic_and_config(vehicle_idx, "position","formatted_address", None, "location", False)
                         # print ("Formatted add topic/conf: {} \n\n{}".format(topic, config))
                         mqtt_client.publish(topic, json.dumps(config), MQTT_QOS, True)
-                            
+
                     init_ha_discovery_for_standard_items(vehicle_idx)
                     ha_discovery_initalised = True
                     logger.info("[Vehicle {}] 6/{} HomeAssistant auto discovery topics published".format(vehicle_idx, count))
 
-                mqtt_client.publish("{}/status/last_update_ts".format(get_mqtt_base_topic(vehicle_idx)), get_timestamp_string(), MQTT_QOS, MQTT_RETAIN)                  
+                mqtt_client.publish("{}/status/last_update_ts".format(get_mqtt_base_topic(vehicle_idx)), get_timestamp_string(), MQTT_QOS, MQTT_RETAIN)
             else:
                 logger.info("[Vehicle {}] [+] Updating status for '{}'".format(vehicle_idx, for_key))
                 status = v.get_status(for_key.upper())
@@ -516,44 +551,45 @@ def get_status(vehicle_idx, for_key=None):
                 topic = "{}/status/{}/{}/value".format(get_mqtt_base_topic(vehicle_idx), cat, for_key.lower())
                 mqtt_client.publish(topic, status, MQTT_QOS, True)
                 logger.info("[Vehicle {}] 1/1 {}: {}".format(vehicle_idx, for_key, status))
-            
+
             return {"status": "Completed", "vehicle_index": vehicle_idx, "command": "get_status"}
 
         except Exception as e:
             _, _, exc_tb = sys.exc_info()
-            logger.error("{} (line {})".format(e, exc_tb.tb_lineno))                
+            logger.error("{} (line {})".format(e, exc_tb.tb_lineno))
             return {"status": "Error", "errorDescription": "{} (line {})".format(e, exc_tb.tb_lineno)}
-        
-    else:        
+
+    else:
         logger.error("'get_status({})' failed as no connection available".format(for_key))
         return {"status": "Error", "errorDescription": "get_status({}) failed as no connection available".format(for_key)}
 
 
-def do_command(json_data):   
+def do_command(json_data):
     global last_command_service_id
 
     # Clear out any historical response data
-    publish_command_response({"status": ""}) 
+    publish_command_response({"status": ""})
     try:
-        get_jlr_connection()   
+        command = json_data["command"]
+        get_jlr_connection()
         if jlr_connection:
-            command = json_data["command"]
-            vehicle_idx = json_data["vehicle_index"] if "vehicle_index" in json_data else None
+            vehicle_idx = json_data["vehicle_index"] if "vehicle_index" in json_data else VEHICLE_IDX
             if MULTI_VEHICLE_SUPPORT:
                 if jlr_connection.vehicle_count == 1:
                     if vehicle_idx is not None and vehicle_idx != 0:
                         logger.warning("Ignoring invalid vehicle index of {} (only a single vehicle is available on the JLR connection)".format(vehicle_idx))
-                    vehicle_idx = 0
-                else:                                    
+                    vehicle_idx = VEHICLE_IDX
+                else:
                     if vehicle_idx is None or vehicle_idx < 0 or vehicle_idx > jlr_connection.vehicle_count - 1:
-                        logger.error("Invalid vehicle index '{}'. Index must be between 0 and {}".format(vehicle_idx, jlr_connection.vehicle_count - 1))    
+                        logger.error("Invalid vehicle index '{}'. Index must be between 0 and {}".format(vehicle_idx, jlr_connection.vehicle_count - 1))
                         publish_command_response({"status":"Error: command '{}' failed as vehicle index {} is invalid".format(command, vehicle_idx)})
-                        return 
-            else:
-                vehicle_idx = 0
-            v = jlr_connection.vehicles[vehicle_idx]                     
+                        return
+
+            logger.debug(f"Using vehicle_idx '{vehicle_idx}' for 'do_command()' (vin: {jlr_connection.vehicles[vehicle_idx].vin})")
+
+            v = jlr_connection.vehicles[vehicle_idx]
             ret = None
-            
+
             status_refresh_delay = DEFAULT_COMMAND_STATUS_REFRESH_DELAY
 
             # First check if we have a 'custom' command...
@@ -569,8 +605,8 @@ def do_command(json_data):
                 # Reset initialised status
                 global ha_discovery_initalised
                 ha_discovery_initalised = False
-                # refresh the sensors list 
-                global DISCOVERY_SENSORS_LIST 
+                # refresh the sensors list
+                global DISCOVERY_SENSORS_LIST
                 DISCOVERY_SENSORS_LIST =  get_config_param(config,"MISC", "DISCOVERY_SENSORS_LIST", "").replace("\n","").replace(" ","").replace("[","").replace("]","")
                 ret = get_status(vehicle_idx)
                 status_refresh_delay = -1
@@ -596,7 +632,7 @@ def do_command(json_data):
                     if "pin" in func_params and MASTER_PIN and "pin" not in kwargs:
                         kwargs["pin"] = MASTER_PIN
 
-                    given_params = sorted(list(kwargs))                    
+                    given_params = sorted(list(kwargs))
                     if func_params and given_params and type(kwargs) is dict:
                         params_ok = (given_params == func_params)
                         if not params_ok:
@@ -607,25 +643,25 @@ def do_command(json_data):
                         params_ok = False
                     else: # func_params is False/zero length, so no need for params
                         params_ok = True
-                    
-                    if not params_ok:                    
+
+                    if not params_ok:
                         raise Exception(ret)
-                                        
+
                     logger.debug("Calling command function '{}' with parameters {}".format(command, kwargs) if given_params else "Calling function '{}'".format(command))
                     ret = command_func(**kwargs)
                 except Exception as e:
                     _, _, exc_tb = sys.exc_info()
-                    logger.error("{} (line {})".format(e, exc_tb.tb_lineno))                
+                    logger.error("{} (line {})".format(e, exc_tb.tb_lineno))
                     ret = {"status" : "Error: {} (line {})]".format(e, exc_tb.tb_lineno)}
-            
+
             publish_command_response(ret)
 
-            last_command_service_id = ret["customerServiceId"] if ret and "customerServiceId" in ret and ret["customerServiceId"] else None           
+            last_command_service_id = ret["customerServiceId"] if ret and "customerServiceId" in ret and ret["customerServiceId"] else None
             update_ha_availablity()
 
             if ret and "status" in ret and not "Error" in ret["status"]:
                 refresh_notice = ". Status will be refreshed in {} seconds".format(status_refresh_delay) if status_refresh_delay > 0 else ""
-                logger.info("[Vehicle {}] '{}' command completed{}".format(vehicle_idx, command, refresh_notice))  
+                logger.info("[Vehicle {}] '{}' command completed{}".format(vehicle_idx, command, refresh_notice))
                 logger.debug("[Vehicle {}] '{}' return value: {}".format(vehicle_idx, command, ret))
                 if status_refresh_delay > 0 and command != "get_service_status":
                     global status_refresh_timer
@@ -635,23 +671,24 @@ def do_command(json_data):
                     status_refresh_timer = Timer(status_refresh_delay, get_status, [vehicle_idx])
                     status_refresh_timer.start()
             else:
-                logger.warn("[Vehicle {}] '{}' failed. ret={}".format(vehicle_idx, command, ret))
+                logger.warning("[Vehicle {}] '{}' failed. ret={}".format(vehicle_idx, command, ret))
         else:
-            logger.error("'{}' command failed as connection to JLR is unavailable".format(command))    
+            logger.error("'{}' command failed as connection to JLR is unavailable".format(command))
             publish_command_response({"status":"Error: '{}' command failed as connection to JLR is unavailable".format(command)})
     except Exception as e:
         _, _, exc_tb = sys.exc_info()
-        logger.error("{} @line number {}. json_data = '{}'".format(e, exc_tb.tb_lineno, json_data))                
-     
+        logger.error("{} @line number {}. json_data = '{}'".format(e, exc_tb.tb_lineno, json_data))
+
 
 signal.signal(signal.SIGTERM, sigterm_handler)
 if not MQTT_SERVER:
     logger.critical("Unable to start system as MQTT broker not defined")
     sys.exit(0)
-    
+
 try:
-    mqtt_client = initialise_mqtt_client(mqtt.Client(client_id=MQTT_CLIENTID))
+    mqtt_client = initialise_mqtt_client(mqtt.Client(clean_session=False, client_id=MQTT_CLIENTID))
     mqtt_client.loop_forever()
+
 
 except KeyboardInterrupt:
     exit_gracefully()

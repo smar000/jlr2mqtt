@@ -1,11 +1,19 @@
 [Unit]
 Description=JLR 2 MQTT Service
+#After=mosquitto.service
+#Requires=mosquitto.service
+#PartOf=mosquittto.service
 
 [Service]
 Type=idle
-WorkingDirectory=/opt/scripts/landrover
-ExecStart=/usr/bin/python3 /opt/scripts/landrover/jlr2mqtt.py
+WorkingDirectory=/opt/scripts/jlr2mqtt
+ExecStart=/usr/bin/python3 /opt/scripts/jlr2mqtt/jlr2mqtt.py
+Restart=on-failure
+RestartSec=5
+
+
 
 [Install]
 Alias=jlr2mqtt
 WantedBy=default.target
+#WantedBy=mosquitto.service
